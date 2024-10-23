@@ -1,0 +1,11 @@
+{
+  "extends": "solhint:recommended",
+  "rules": {
+    "compiler-version": ["error", "^0.8.0"],
+    "no-unused-vars": "warn",
+    "immutable-vars-naming": "off",
+    "const-name-snakecase": "off",
+    "no-empty-blocks": "off",
+    "func-visibility": ["warn", { "ignoreConstructors": true }]
+  }
+}

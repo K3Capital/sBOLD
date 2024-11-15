@@ -43,7 +43,7 @@ contract sBold is ERC4626, BaseSBold {
     /// @param assets The amount of assets to deposit.
     /// @param receiver The address to mint the shares to.
     /// @return The amount of shares.
-    function deposit(uint256 assets, address receiver) public override returns (uint256) {
+    function deposit(uint256 assets, address receiver) public override whenNotPaused returns (uint256) {
         _checkCollHealth(true);
 
         uint256 shares = super.deposit(assets, receiver);
@@ -60,7 +60,7 @@ contract sBold is ERC4626, BaseSBold {
     /// @param shares The amount of shares to mint.
     /// @param receiver The address to send the shares to.
     /// @return The amount of assets.
-    function mint(uint256 shares, address receiver) public override returns (uint256) {
+    function mint(uint256 shares, address receiver) public override whenNotPaused returns (uint256) {
         _checkCollHealth(true);
 
         uint256 assets = super.mint(shares, receiver);
@@ -78,7 +78,7 @@ contract sBold is ERC4626, BaseSBold {
     /// @param receiver The address to send the assets to.
     /// @param owner The owner of the shares.
     /// @return The amount of assets.
-    function redeem(uint256 shares, address receiver, address owner) public override returns (uint256) {
+    function redeem(uint256 shares, address receiver, address owner) public override whenNotPaused returns (uint256) {
         _checkCollHealth(true);
 
         uint256 maxShares = maxRedeem(owner);
@@ -100,7 +100,7 @@ contract sBold is ERC4626, BaseSBold {
     /// @param receiver The address to send the shares to.
     /// @param owner The owner of the shares.
     /// @return The amount of shares.
-    function withdraw(uint256 assets, address receiver, address owner) public override returns (uint256) {
+    function withdraw(uint256 assets, address receiver, address owner) public override whenNotPaused returns (uint256) {
         _checkCollHealth(true);
 
         uint256 maxAssets = maxWithdraw(owner);
@@ -120,7 +120,7 @@ contract sBold is ERC4626, BaseSBold {
     /// @notice Swaps collateral balances to $BOLD.
     /// @param data The swap data.
     /// @param receiver The reward receiver.
-    function swap(bytes[] memory data, address receiver) public {
+    function swap(bytes[] memory data, address receiver) public whenNotPaused {
         if (data.length != sps.length) revert InvalidDataArray();
 
         IERC20 bold = IERC20(asset());
@@ -205,14 +205,14 @@ contract sBold is ERC4626, BaseSBold {
     /// @notice Calculates the $sBOLD:BOLD rate.
     /// @return The $sBOLD:$BOLD rate.
     function getSBoldRate() public view returns (uint256) {
-        (uint256 totalBold, , ) = calcFragments();
+        (uint256 totalBold, , , ) = calcFragments();
 
         return (totalBold + 1).mulDiv(10 ** decimals(), totalSupply() + 10 ** _decimalsOffset());
     }
 
     /// @notice Calculates the total value in $BOLD of the assets in the contract.
     /// @return The total value in USD, $BOLD amount and collateral in USD.
-    function calcFragments() public view returns (uint256, uint256, uint256) {
+    function calcFragments() public view returns (uint256, uint256, uint256, uint256) {
         address bold = asset();
         // Get compounded $BOLD amount
         uint256 boldAmount = SpLogic.getBoldAssets(sps, IERC20(bold));
@@ -230,7 +230,7 @@ contract sBold is ERC4626, BaseSBold {
         // `maxCollInBold` should be around the breakeven for the swap caller.
         uint256 _maxCollInBold = maxCollInBold > collInBold ? collInBold : maxCollInBold;
 
-        return (totalBold - _maxCollInBold, boldAmount, collValue);
+        return (totalBold - _maxCollInBold, boldAmount, collValue, collInBold);
     }
 
     /// @notice Converts the $BOLD assets to shares based on $sBOLD exchange rate.

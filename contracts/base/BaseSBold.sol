@@ -2,6 +2,7 @@
 pragma solidity ^0.8.0;
 
 import {Ownable} from "@openzeppelin/contracts/access/Ownable.sol";
+import {Pausable} from "@openzeppelin/contracts/utils/Pausable.sol";
 import {IStabilityPool} from "../external/IStabilityPool.sol";
 import {IPriceOracle} from "../interfaces/IPriceOracle.sol";
 import {ISBold} from "../interfaces/ISBold.sol";
@@ -10,7 +11,7 @@ import {Common} from "../libraries/Common.sol";
 
 /// @title sBold Protocol
 /// @notice The $sBOLD represents an ERC4626 yield-bearing token.
-abstract contract BaseSBold is ISBold, Ownable {
+abstract contract BaseSBold is ISBold, Pausable, Ownable {
     /// @notice Data for stability pools.
     SP[] public sps;
     /// @notice The fee in basis points.
@@ -113,12 +114,32 @@ abstract contract BaseSBold is ISBold, Ownable {
     /// @notice Sets the maximum Coll value aggregated and owned.
     /// @param _maxCollInBold The maximum Coll value.
     function setMaxCollInBold(uint256 _maxCollInBold) external onlyOwner {
-        if (_maxCollInBold == 0) revert InvalidConfiguration();
+        if (_maxCollInBold == 0 || _maxCollInBold > Constants.MAX_COLL_IN_BOLD_UPPER_BOUND) {
+            revert InvalidConfiguration();
+        }
 
         maxCollInBold = _maxCollInBold;
 
         emit MaxCollValueSet(_maxCollInBold);
     }
+
+    /*//////////////////////////////////////////////////////////////
+                                PAUSE
+    //////////////////////////////////////////////////////////////*/
+
+    /// @notice Pauses contract.
+    function pause() external onlyOwner {
+        _pause();
+    }
+
+    /// @notice Unpauses contract.
+    function unpause() external onlyOwner {
+        _unpause();
+    }
+
+    /*//////////////////////////////////////////////////////////////
+                                INTERNAL
+    //////////////////////////////////////////////////////////////*/
 
     /// @notice Sets Stability Pools and Coll assets structures.
     /// The total weight of all Stability Pools should be equal to `BPS_DENOMINATOR`.

@@ -332,6 +332,34 @@ describe('sBold', async function () {
     });
   });
 
+  describe('#pause', function () {
+    it('should pause sBold', async function () {
+      await expect(sBold.pause()).to.emit(sBold, 'Paused');
+
+      expect(await sBold.paused()).to.eq(true);
+    });
+
+    it('should fail to pause if caller is not owner', async function () {
+      await expect(sBold.connect(bob).pause()).to.be.rejectedWith('OwnableUnauthorizedAccount');
+    });
+  });
+
+  describe('#unpause', function () {
+    it('should unpause sBold', async function () {
+      await sBold.pause();
+
+      await expect(sBold.unpause()).to.emit(sBold, 'Unpaused');
+
+      expect(await sBold.paused()).to.eq(false);
+    });
+
+    it('should fail to unpause if caller is not owner', async function () {
+      await sBold.pause();
+
+      await expect(sBold.connect(bob).unpause()).to.be.rejectedWith('OwnableUnauthorizedAccount');
+    });
+  });
+
   describe('#setPriceOracle', function () {
     it('should set price oracle and emit event', async function () {
       await expect(sBold.setPriceOracle(random)).to.emit(sBold, 'PriceOracleSet');
@@ -488,6 +516,12 @@ describe('sBold', async function () {
 
     it('should revert to set max collateral value with zero value', async function () {
       await expect(sBold.setMaxCollInBold(0)).to.be.rejectedWith('InvalidConfiguration');
+    });
+
+    it('should revert to set max collateral value with value over the limit', async function () {
+      const maxCollInBold = ethers.parseEther('7501');
+
+      await expect(sBold.setMaxCollInBold(maxCollInBold)).to.be.rejectedWith('InvalidConfiguration');
     });
   });
 
@@ -798,6 +832,16 @@ describe('sBold', async function () {
 
       await expect(sBold.deposit(ONE_ETH, ownerAddress)).to.be.rejectedWith('CollOverLimit');
     });
+
+    it('should revert to deposit if sBOLD is paused', async function () {
+      const ownerAddress = await owner.getAddress();
+
+      // setup
+      await sBold.pause();
+
+      // deposit
+      await expect(sBold.deposit(ONE_ETH, ownerAddress)).to.be.rejectedWith('EnforcedPause');
+    });
   });
 
   describe('#mint', function () {
@@ -949,6 +993,16 @@ describe('sBold', async function () {
       await bold.approve(sBold.target, ONE_ETH);
 
       await expect(sBold.mint(ONE_ETH, ownerAddress)).to.be.rejectedWith('CollOverLimit');
+    });
+
+    it('should revert to mint if sBOLD is paused', async function () {
+      const ownerAddress = await owner.getAddress();
+
+      // setup
+      await sBold.pause();
+
+      // mint
+      await expect(sBold.mint(ONE_ETH, ownerAddress)).to.be.rejectedWith('EnforcedPause');
     });
   });
 
@@ -1201,6 +1255,18 @@ describe('sBold', async function () {
 
       await expect(sBold.withdraw(maxWithdraw, ownerAddress, ownerAddress)).to.be.rejectedWith('CollOverLimit');
     });
+
+    it('should revert to withdraw if sBOLD is paused', async function () {
+      const ownerAddress = await owner.getAddress();
+
+      // setup
+      await sBold.pause();
+
+      const maxWithdraw = await sBold.maxWithdraw(ownerAddress);
+
+      // withdraw
+      await expect(sBold.withdraw(maxWithdraw, ownerAddress, ownerAddress)).to.be.rejectedWith('EnforcedPause');
+    });
   });
 
   describe('#redeem', function () {
@@ -1366,6 +1432,18 @@ describe('sBold', async function () {
       const maxRedeem = await sBold.maxRedeem(ownerAddress);
 
       await expect(sBold.redeem(maxRedeem, ownerAddress, ownerAddress)).to.be.rejectedWith('CollOverLimit');
+    });
+
+    it('should revert to redeem if sBOLD is paused', async function () {
+      const ownerAddress = await owner.getAddress();
+
+      // setup
+      await sBold.pause();
+
+      const maxRedeem = await sBold.maxRedeem(ownerAddress);
+
+      // redeem
+      await expect(sBold.redeem(maxRedeem, ownerAddress, ownerAddress)).to.be.rejectedWith('EnforcedPause');
     });
   });
 
@@ -1659,6 +1737,16 @@ describe('sBold', async function () {
 
       // execute swap
       await expect(sBold.swap(['0x', callData1, '0x'], ownerAddress)).to.be.rejectedWith('InsufficientAmount');
+    });
+
+    it('should revert to swap if sBOLD is paused', async function () {
+      const ownerAddress = await owner.getAddress();
+
+      // setup
+      await sBold.pause();
+
+      // swap
+      await expect(sBold.swap(['0x', '0x', '0x'], ownerAddress)).to.be.rejectedWith('EnforcedPause');
     });
   });
 });

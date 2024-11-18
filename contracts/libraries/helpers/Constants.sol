@@ -14,6 +14,8 @@ library Constants {
     uint256 internal constant BPS_MIN_REWARD = 50;
     /// @notice The upper boundary for maximum slippage tolerance in BPS.
     uint256 internal constant BPS_MAX_SLIPPAGE = 1_000;
+    /// @notice The upper boundary for maximum collateral denominated in $BOLD.
+    uint256 internal constant MAX_COLL_IN_BOLD_UPPER_BOUND = 7_500e18;
     /// @notice The price precision returned from oracle.
     uint256 internal constant ORACLE_PRICE_PRECISION = 18;
 }

@@ -84,7 +84,8 @@ abstract contract BaseSBold is ISBold, Pausable, Ownable {
     /// @notice Sets the reward in BPS.
     /// @param _rewardBps The reward in BPS.
     function setReward(uint256 _rewardBps) external onlyOwner {
-        if (_rewardBps < Constants.BPS_MIN_REWARD) revert InvalidConfiguration();
+        if (_rewardBps < Constants.BPS_MIN_REWARD || _rewardBps > Constants.BPS_DENOMINATOR)
+            revert InvalidConfiguration();
 
         rewardBps = _rewardBps;
 

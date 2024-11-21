@@ -453,6 +453,12 @@ describe('sBold', async function () {
 
       await expect(sBold.setReward(rewardBps)).to.be.rejectedWith('InvalidConfiguration');
     });
+
+    it('should revert to set reward with value above the maximum', async function () {
+      const rewardBps = 10001;
+
+      await expect(sBold.setReward(rewardBps)).to.be.rejectedWith('InvalidConfiguration');
+    });
   });
 
   describe('#setMaxSlippage', function () {

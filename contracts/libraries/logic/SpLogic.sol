@@ -41,8 +41,8 @@ library SpLogic {
             uint256 amountProRata = amountSP.mulDiv(portion, 10 ** decimals);
 
             if (amountProRata == 0) return;
-            // Withdraw amount from SP (accumulated gains are not transferred).
-            IStabilityPool(sp.sp).withdrawFromSP(amountProRata, false);
+            // Withdraw amount from SP (accumulated gains are transferred).
+            IStabilityPool(sp.sp).withdrawFromSP(amountProRata, true);
         }
     }
 
@@ -86,7 +86,13 @@ library SpLogic {
     /// @param _sp The SP address.
     /// @return The aggregated compounded $BOLD deposit from SP.
     function _getBoldAssetsSP(address _sp) private view returns (uint256) {
-        return IStabilityPool(_sp).getCompoundedBoldDeposit(address(this));
+        IStabilityPool sp = IStabilityPool(_sp);
+        // Accounted yield gains from deposits
+        uint256 compoundedBold = sp.getCompoundedBoldDeposit(address(this));
+        // Pending yield gains from deposits
+        uint256 pendingYield = sp.getDepositorYieldGainWithPending(address(this));
+
+        return compoundedBold + pendingYield;
     }
 
     /// @notice Returns collateral assets structure from SP.

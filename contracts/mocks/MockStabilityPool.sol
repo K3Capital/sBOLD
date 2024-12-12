@@ -8,6 +8,7 @@ contract MockStabilityPool {
     bool doRevert;
     string revertMsg = "oops";
     uint256 compoundedBoldGain;
+    uint256 pendingBoldGain;
     uint256 collGain;
     uint256 transferCollateralAmount;
     address bold;
@@ -47,6 +48,10 @@ contract MockStabilityPool {
 
     function setDepositorCollGain(uint256 _collGain) external {
         collGain = _collGain;
+    }
+
+    function getDepositorYieldGainWithPending(address) external view returns (uint256) {
+        return pendingBoldGain;
     }
 
     function getCompoundedBoldDeposit(address) external view returns (uint256) {

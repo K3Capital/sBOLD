@@ -46,11 +46,11 @@ library SpLogic {
         }
     }
 
-    /// @notice Claims accumulated collateral gains from each SP.
+    /// @notice Claims gains from each SP.
     /// @param sps The SPs to claim from.
     function claimAllCollGains(ISBold.SP[] memory sps) internal {
         for (uint256 i = 0; i < sps.length; i++) {
-            IStabilityPool(sps[i].sp).claimAllCollGains();
+            IStabilityPool(sps[i].sp).withdrawFromSP(0, true);
         }
     }
 

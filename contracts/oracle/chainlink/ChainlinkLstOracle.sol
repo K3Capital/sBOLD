@@ -3,6 +3,7 @@ pragma solidity ^0.8.0;
 
 import {AggregatorV3Interface} from "../../external/AggregatorV3Interface.sol";
 import {BaseChainlinkOracle} from "./BaseChainlinkOracle.sol";
+import {Decimals} from "../../libraries/helpers/Decimals.sol";
 import {Common} from "../../libraries/Common.sol";
 import {Constants} from "../../libraries/helpers/Constants.sol";
 
@@ -48,7 +49,7 @@ contract ChainlinkLstOracle is BaseChainlinkOracle {
     function getQuote(uint256 inAmount, address) external view override returns (uint256) {
         uint256 lstUsdPrice = _fetchPrice();
 
-        return (inAmount * lstUsdPrice) / 10 ** Constants.ORACLE_PRICE_PRECISION;
+        return (inAmount * lstUsdPrice) / 10 ** Decimals.getDecimals(base);
     }
 
     /// @inheritdoc BaseChainlinkOracle

@@ -12,6 +12,8 @@ library Constants {
     uint256 internal constant BPS_MAX_FEE = 500;
     /// @notice The minimum reward in BPS.
     uint256 internal constant BPS_MIN_REWARD = 50;
+    /// @notice The minimum reward in BPS.
+    uint256 internal constant BPS_MAX_REWARD = 1_000;
     /// @notice The upper boundary for maximum slippage tolerance in BPS.
     uint256 internal constant BPS_MAX_SLIPPAGE = 1_000;
     /// @notice The upper boundary for maximum collateral denominated in $BOLD.

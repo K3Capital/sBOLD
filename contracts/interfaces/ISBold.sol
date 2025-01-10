@@ -8,12 +8,12 @@ interface ISBold {
 
     struct SPConfig {
         address addr;
-        uint256 weight;
+        uint96 weight;
     }
 
     struct SP {
         address sp;
-        uint256 weight;
+        uint96 weight;
         address coll;
     }
 
@@ -22,13 +22,26 @@ interface ISBold {
         uint256 balance;
     }
 
+    struct SwapDataWithColl {
+        address addr;
+        uint256 balance;
+        uint256 collInBold;
+        bytes data;
+    }
+
+    struct SwapData {
+        address sp;
+        uint256 balance;
+        bytes data;
+    }
+
     /*//////////////////////////////////////////////////////////////
                                  ERRORS
     //////////////////////////////////////////////////////////////*/
 
     error InvalidConfiguration();
 
-    error ExecutionFailed();
+    error ExecutionFailed(bytes data);
 
     error CollOverLimit();
 
@@ -70,6 +83,8 @@ interface ISBold {
         uint256 amountOut,
         uint256 minOut
     );
+
+    event Rebalance(SPConfig[] _sps);
 
     /*//////////////////////////////////////////////////////////////
                                  FUNCTIONS

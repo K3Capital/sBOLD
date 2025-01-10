@@ -1,6 +1,6 @@
 ## Introducing sBOLD
 
-sBOLD is a yield-bearing tokenized representation of a weighted average deposit into Liquity's v2 Stability Pools. The protocol accepts BOLD deposits and routes them into the wstETH, rETH and wETH stability pools in fixed proportions (50%, 30% and 20%, respectively). In return, the depositor receives an ERC4626 token that could be integrated with third-party protocols like money markets, decentralized exchanges and yield trading platforms for improved capital efficiency. 
+sBOLD is a yield-bearing tokenized representation of a weighted average deposit into Liquity's v2 Stability Pools. The protocol accepts BOLD deposits and routes them into the wstETH, rETH and wETH stability pools in fixed proportions (50%, 30% and 20%, respectively) in the initial configuration after deployment. The operational Stability Pools can be rebalanced with different weights and changed. In return, the depositor receives an ERC4626 token that could be integrated with third-party protocols like money markets, decentralized exchanges and yield trading platforms for improved capital efficiency. 
 
 The yield-bearing component of sBOLD stems from two streams. 
 
@@ -61,7 +61,7 @@ On withdraw and redeem accounts withdraw assets from the operational stability p
 
 sBold introduces a mechanism for collateral aggregation across each internally operational Bold stability pool, which claims the accumulated discounted funds and swaps them for BOLD with a low boundary, based on slippage tolerance configuration. After the swaps are successfully executed, the contract deposits the BOLD primary asset with the same preset weights to each of the connected stability pools.
 
-The swap can be triggered by any actor, who could provide call data, which could be effective enough to result in a quantity of primary assets, equal to or more than the minimum calculated. 
+The swap can be triggered by any actor, who could provide call data, which could be effective enough to result in a quantity of primary assets, equal to or more than the minimum calculated. The swaps can be partial and for a single collateral to ensure system's flexibility.
 
 sBold will onboard only trusted adapters, which are industry standard or internally owned and resilient strategies. Initially, sBold will rely on the battle-tested 1inch router v6 to aggregate the best liquidity options. In this configuration, the swap caller should input a route call received from the 1inch API.
 

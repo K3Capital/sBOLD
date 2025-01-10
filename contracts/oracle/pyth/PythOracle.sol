@@ -26,8 +26,6 @@ contract PythOracle is IPriceOracle, Ownable {
     int256 internal constant MIN_EXPONENT = -20;
     /// @dev The largest PythStruct exponent that the oracle can handle.
     int256 internal constant MAX_EXPONENT = 12;
-    /// @dev The denominator for basis points values (maxConfWidth).
-    uint256 internal constant BASIS_POINTS = 10_000;
     /// @notice Name of the oracle.
     string public constant name = "Pyth sBold V1";
     /// @notice The address of the Pyth oracle proxy.
@@ -124,7 +122,7 @@ contract PythOracle is IPriceOracle, Ownable {
         }
 
         // Verify that the price is positive and within the confidence width.
-        if (p.price <= 0 || p.conf > (uint64(p.price) * maxConfWidth) / BASIS_POINTS) {
+        if (p.price <= 0 || p.conf > (uint64(p.price) * maxConfWidth) / Constants.BPS_DENOMINATOR) {
             revert InvalidPrice();
         }
 

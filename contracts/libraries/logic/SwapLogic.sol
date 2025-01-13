@@ -1,14 +1,16 @@
 // SPDX-License-Identifier: GPL-2.0-or-later
 pragma solidity ^0.8.0;
 
-import {IERC20} from "@openzeppelin/contracts/token/ERC20/ERC20.sol";
+import {ERC20, IERC20} from "@openzeppelin/contracts/token/ERC20/ERC20.sol";
 import {ISBold} from "../../interfaces/ISBold.sol";
 import {IPriceOracle} from "../../interfaces/IPriceOracle.sol";
+import {IStabilityPool} from "../../external/IStabilityPool.sol";
 import {Constants} from "../../libraries/helpers/Constants.sol";
 import {Decimals} from "../../libraries/helpers/Decimals.sol";
 import {Math} from "@openzeppelin/contracts/utils/math/Math.sol";
 import {SafeERC20} from "@openzeppelin/contracts/token/ERC20/utils/SafeERC20.sol";
 import {QuoteLogic} from "./QuoteLogic.sol";
+import {SpLogic} from "./SpLogic.sol";
 
 /// @title SwapLogic
 /// @notice Logic for swap execution.
@@ -16,42 +18,81 @@ library SwapLogic {
     using Math for uint256;
 
     /// @notice Swaps each SP collateral for $BOLD and returns total swapped amount.
+    /// @param dst The unit in which the `src` is swapped.
     /// @param adapter The adapter to use to execute swap
-    /// @param priceOracle The price oracle to use for getting the quote.
-    /// @param balances An array of balances representing the collateral balance structs.
     /// @param swapData The swap data.
     /// @param maxSlippage The minimum amount to receive after the swap.
-    /// @param dst The unit in which the `src` is swapped.
     /// @return amount The quote amount with subtracted fees.
     function swap(
-        address adapter,
-        IPriceOracle priceOracle,
-        ISBold.CollBalance[] memory balances,
-        bytes[] memory swapData,
-        uint256 maxSlippage,
         address dst,
-        uint8 dstDecimals
+        address adapter,
+        ISBold.SwapDataWithColl[] memory swapData,
+        uint256 maxSlippage
     ) internal returns (uint256 amount) {
         // Execute swap for each Coll
-        for (uint256 i = 0; i < balances.length; i++) {
-            // Return if balance is not present
-            if (balances[i].balance == 0) continue;
-            // Get collateral in $BOLD
-            uint256 collInBold = QuoteLogic.getInBoldQuote(
-                priceOracle,
-                dst,
-                balances[i].addr,
-                balances[i].balance,
-                dstDecimals
-            );
+        for (uint256 i = 0; i < swapData.length; i++) {
+            if (swapData[i].balance == 0) continue;
             // Calculate minimum amount out in $BOLD
-            uint256 minOut = calcMinOut(Decimals.scale(collInBold, dstDecimals), maxSlippage);
+            uint256 minOut = calcMinOut(swapData[i].collInBold, maxSlippage);
             // Swap `src` for `bold`
-            uint256 amountOut = _execute(adapter, balances[i].addr, dst, balances[i].balance, minOut, swapData[i]);
+            uint256 amountOut = _execute(adapter, swapData[i].addr, dst, swapData[i].balance, minOut, swapData[i].data);
             // Aggregate total amount of $BOLD received after swap
             amount += amountOut;
             // Emit on each swap
-            emit ISBold.Swap(adapter, balances[i].addr, dst, balances[i].balance, amountOut, minOut);
+            emit ISBold.Swap(adapter, swapData[i].addr, dst, swapData[i].balance, amountOut, minOut);
+        }
+    }
+
+    /// @notice Prepare swap data and claim collateral from protocol for each provided SP.
+    /// @param bold Address of the underlying asset of the protocol.
+    /// @param priceOracle Address of the price oracle.
+    /// @param sps The available SPs within the protocol.
+    /// @param swapData Input data for swap.
+    /// @return swapDataWithColl Prepared data for swap.
+    function prepareSwap(
+        address bold,
+        IPriceOracle priceOracle,
+        ISBold.SP[] memory sps,
+        ISBold.SwapData[] memory swapData
+    ) internal returns (ISBold.SwapDataWithColl[] memory swapDataWithColl) {
+        if (swapData.length > sps.length || swapData.length == 0) {
+            revert ISBold.InvalidDataArray();
+        }
+
+        swapDataWithColl = new ISBold.SwapDataWithColl[](swapData.length);
+
+        // Cycle through the input list of SP data for swap and find matching available SPs in protocol.
+        for (uint256 i = 0; i < swapData.length; i++) {
+            for (uint256 j = 0; j < sps.length; j++) {
+                if (sps[j].sp == swapData[i].sp) {
+                    // Claim collateral.
+                    IStabilityPool(sps[j].sp).withdrawFromSP(0, true);
+
+                    // If the input balance is not equal to the maximum claimed from SPs, the collateral will stay idle in this contract,
+                    // until next swap utilizes the funds.
+                    uint256 currentBalance = SpLogic._getCollBalanceSP(sps[j], true).balance;
+                    uint256 balance = currentBalance < swapData[i].balance ? currentBalance : swapData[i].balance;
+
+                    // Get collateral in $BOLD.
+                    uint256 collInBold = QuoteLogic.getInBoldQuote(
+                        priceOracle,
+                        bold,
+                        sps[j].coll,
+                        balance,
+                        ERC20(bold).decimals()
+                    );
+                    // Prepare data for swap by including details regarding collateral.
+                    swapDataWithColl[i] = ISBold.SwapDataWithColl({
+                        addr: sps[j].coll,
+                        balance: balance,
+                        collInBold: collInBold,
+                        data: swapData[i].data
+                    });
+                }
+            }
+
+            // Revert if input SP address is not matching one of current SPs.
+            if (swapDataWithColl[i].addr == address(0)) revert ISBold.InvalidDataArray();
         }
     }
 
@@ -97,9 +138,9 @@ library SwapLogic {
         // Approve `_inAmount` for `adapter`
         IERC20(_src).approve(_adapter, _inAmount);
         // Execute swap
-        (bool success, ) = _adapter.call(_swapData);
+        (bool success, bytes memory data) = _adapter.call(_swapData);
         // Revert on failed swap
-        if (!success) revert ISBold.ExecutionFailed();
+        if (!success) revert ISBold.ExecutionFailed(data);
         // Get balance after the swap
         uint256 balance1 = dst.balanceOf(address(this));
         // Get the amount received

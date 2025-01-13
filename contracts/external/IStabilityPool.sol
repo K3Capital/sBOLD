@@ -46,8 +46,6 @@ interface IStabilityPool {
      */
     function withdrawFromSP(uint256 _amount, bool doClaim) external;
 
-    function claimAllCollGains() external;
-
     /*
      * Initial checks:
      * - Caller is TroveManager

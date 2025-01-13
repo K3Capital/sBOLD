@@ -11,7 +11,7 @@ contract BaseChainlinkOracle is IPriceOracle {
     /// @notice The feed structure for price oracle adapters.
     struct Feed {
         address addr;
-        uint256 maxStaleness;
+        uint96 maxStaleness;
     }
 
     /// @notice The minimum permitted value for `maxStaleness`.

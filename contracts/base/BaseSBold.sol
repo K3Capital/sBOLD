@@ -1,17 +1,20 @@
 // SPDX-License-Identifier: GPL-2.0-or-later
 pragma solidity ^0.8.0;
 
+import {ERC4626} from "@openzeppelin/contracts/token/ERC20/extensions/ERC4626.sol";
 import {Ownable} from "@openzeppelin/contracts/access/Ownable.sol";
 import {Pausable} from "@openzeppelin/contracts/utils/Pausable.sol";
 import {IStabilityPool} from "../external/IStabilityPool.sol";
 import {IPriceOracle} from "../interfaces/IPriceOracle.sol";
 import {ISBold} from "../interfaces/ISBold.sol";
+import {ICommon} from "../interfaces/ICommon.sol";
 import {Constants} from "../libraries/helpers/Constants.sol";
 import {Common} from "../libraries/Common.sol";
+import {TransientStorage} from "../libraries/helpers/TransientStorage.sol";
 
 /// @title sBold Protocol
 /// @notice The $sBOLD represents an ERC4626 yield-bearing token.
-abstract contract BaseSBold is ISBold, Pausable, Ownable {
+abstract contract BaseSBold is ISBold, ICommon, ERC4626, Pausable, Ownable {
     /// @notice Data for stability pools.
     SP[] public sps;
     /// @notice The fee in basis points.
@@ -45,6 +48,14 @@ abstract contract BaseSBold is ISBold, Pausable, Ownable {
         vault = _vault;
     }
 
+    /// @dev Stores and loads collateral in $BOLD value in transient storage.
+    /// Operates with three values, the collateral in USD, in $BOLD and a flag.
+    modifier execCollateralOps() {
+        _checkAndStoreCollValueInBold();
+        _;
+        TransientStorage.switchOffCollInBoldFlag();
+    }
+
     /*//////////////////////////////////////////////////////////////
                                SETTERS
     //////////////////////////////////////////////////////////////*/
@@ -63,6 +74,7 @@ abstract contract BaseSBold is ISBold, Pausable, Ownable {
     /// @param _vault The address of the vault.
     function setVault(address _vault) external onlyOwner {
         Common.revertZeroAddress(_vault);
+        if (_vault == asset() || _vault == address(this)) revert InvalidAddress();
 
         vault = _vault;
 
@@ -84,7 +96,7 @@ abstract contract BaseSBold is ISBold, Pausable, Ownable {
     /// @notice Sets the reward in BPS.
     /// @param _rewardBps The reward in BPS.
     function setReward(uint256 _rewardBps) external onlyOwner {
-        if (_rewardBps < Constants.BPS_MIN_REWARD || _rewardBps > Constants.BPS_DENOMINATOR)
+        if (_rewardBps < Constants.BPS_MIN_REWARD || _rewardBps > Constants.BPS_MAX_REWARD)
             revert InvalidConfiguration();
 
         rewardBps = _rewardBps;
@@ -106,6 +118,10 @@ abstract contract BaseSBold is ISBold, Pausable, Ownable {
     /// @param _swapAdapter The swap adapter address.
     function setSwapAdapter(address _swapAdapter) external onlyOwner {
         Common.revertZeroAddress(_swapAdapter);
+        if (_swapAdapter == asset()) revert InvalidAddress();
+        for (uint256 i = 0; i < sps.length; i++) {
+            if (_swapAdapter == sps[i].sp) revert InvalidAddress();
+        }
 
         swapAdapter = _swapAdapter;
 
@@ -153,7 +169,7 @@ abstract contract BaseSBold is ISBold, Pausable, Ownable {
         uint256 totalWeight;
         for (uint256 i = 0; i < _sps.length; i++) {
             address spAddress = _sps[i].addr;
-            uint256 weight = _sps[i].weight;
+            uint96 weight = _sps[i].weight;
 
             // Verify input
             Common.revertZeroAddress(spAddress);
@@ -172,4 +188,7 @@ abstract contract BaseSBold is ISBold, Pausable, Ownable {
 
         if (totalWeight != Constants.BPS_DENOMINATOR) revert InvalidTotalWeight();
     }
+
+    /// @notice Check and store collateral value in $BOLD if transient storage load is not enabled.
+    function _checkAndStoreCollValueInBold() internal virtual {}
 }

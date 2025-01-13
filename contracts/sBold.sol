@@ -3,18 +3,20 @@ pragma solidity ^0.8.0;
 
 import {ERC20, IERC20} from "@openzeppelin/contracts/token/ERC20/ERC20.sol";
 import {ERC4626} from "@openzeppelin/contracts/token/ERC20/extensions/ERC4626.sol";
-import {BaseSBold} from "./base/BaseSBold.sol";
+import {ReentrancyGuardTransient} from "@openzeppelin/contracts/utils/ReentrancyGuardTransient.sol";
 import {Math} from "@openzeppelin/contracts/utils/math/Math.sol";
 import {SafeERC20} from "@openzeppelin/contracts/token/ERC20/utils/SafeERC20.sol";
+import {BaseSBold} from "./base/BaseSBold.sol";
 import {SpLogic} from "./libraries/logic/SpLogic.sol";
 import {SwapLogic} from "./libraries/logic/SwapLogic.sol";
 import {QuoteLogic} from "./libraries/logic/QuoteLogic.sol";
 import {Constants} from "./libraries/helpers/Constants.sol";
 import {Decimals} from "./libraries/helpers/Decimals.sol";
+import {TransientStorage} from "./libraries/helpers/TransientStorage.sol";
 
 /// @title sBold Protocol
 /// @notice The $BOLD ERC4626 yield-bearing token.
-contract sBold is ERC4626, BaseSBold {
+contract sBold is BaseSBold, ReentrancyGuardTransient {
     using Math for uint256;
 
     /// @notice Deploys sBold.
@@ -40,12 +42,13 @@ contract sBold is ERC4626, BaseSBold {
     //////////////////////////////////////////////////////////////*/
 
     /// @notice Deposits $BOLD in SP and mints corresponding $sBOLD.
-    /// @param assets The amount of assets to deposit.
+    /// @param assets The amount of assets to deposit + fee to collect.
     /// @param receiver The address to mint the shares to.
     /// @return The amount of shares.
-    function deposit(uint256 assets, address receiver) public override whenNotPaused returns (uint256) {
-        _checkCollHealth(true);
-
+    function deposit(
+        uint256 assets,
+        address receiver
+    ) public override whenNotPaused nonReentrant execCollateralOps returns (uint256) {
         uint256 shares = super.deposit(assets, receiver);
 
         uint256 fee = _calcFee(assets);
@@ -60,15 +63,22 @@ contract sBold is ERC4626, BaseSBold {
     /// @param shares The amount of shares to mint.
     /// @param receiver The address to send the shares to.
     /// @return The amount of assets.
-    function mint(uint256 shares, address receiver) public override whenNotPaused returns (uint256) {
-        _checkCollHealth(true);
+    function mint(
+        uint256 shares,
+        address receiver
+    ) public override whenNotPaused nonReentrant execCollateralOps returns (uint256) {
+        uint256 maxShares = maxMint(receiver);
+        if (shares > maxShares) {
+            revert ERC4626ExceededMaxMint(receiver, shares, maxShares);
+        }
 
-        uint256 assets = super.mint(shares, receiver);
+        uint256 assets = super.previewMint(shares);
+        _deposit(_msgSender(), receiver, assets, shares);
 
         uint256 fee = _calcFee(assets);
-        if (fee > 0) SafeERC20.safeTransfer(IERC20(asset()), vault, fee);
+        if (fee > 0) SafeERC20.safeTransferFrom(IERC20(asset()), _msgSender(), vault, fee);
 
-        SpLogic.provideToSP(sps, assets - fee);
+        SpLogic.provideToSP(sps, assets);
 
         return assets;
     }
@@ -78,9 +88,11 @@ contract sBold is ERC4626, BaseSBold {
     /// @param receiver The address to send the assets to.
     /// @param owner The owner of the shares.
     /// @return The amount of assets.
-    function redeem(uint256 shares, address receiver, address owner) public override whenNotPaused returns (uint256) {
-        _checkCollHealth(true);
-
+    function redeem(
+        uint256 shares,
+        address receiver,
+        address owner
+    ) public override whenNotPaused nonReentrant execCollateralOps returns (uint256) {
         uint256 maxShares = maxRedeem(owner);
         if (shares > maxShares) {
             revert ERC4626ExceededMaxRedeem(owner, shares, maxShares);
@@ -88,7 +100,7 @@ contract sBold is ERC4626, BaseSBold {
 
         uint256 assets = previewRedeem(shares);
 
-        SpLogic.withdrawFromSP(sps, shares, totalSupply(), decimals());
+        SpLogic.withdrawFromSP(sps, shares, totalSupply(), decimals(), true);
 
         _withdraw(_msgSender(), receiver, owner, assets, shares);
 
@@ -100,9 +112,11 @@ contract sBold is ERC4626, BaseSBold {
     /// @param receiver The address to send the shares to.
     /// @param owner The owner of the shares.
     /// @return The amount of shares.
-    function withdraw(uint256 assets, address receiver, address owner) public override whenNotPaused returns (uint256) {
-        _checkCollHealth(true);
-
+    function withdraw(
+        uint256 assets,
+        address receiver,
+        address owner
+    ) public override whenNotPaused nonReentrant execCollateralOps returns (uint256) {
         uint256 maxAssets = maxWithdraw(owner);
         if (assets > maxAssets) {
             revert ERC4626ExceededMaxWithdraw(owner, assets, maxAssets);
@@ -110,7 +124,7 @@ contract sBold is ERC4626, BaseSBold {
 
         uint256 shares = previewWithdraw(assets);
 
-        SpLogic.withdrawFromSP(sps, shares, totalSupply(), decimals());
+        SpLogic.withdrawFromSP(sps, shares, totalSupply(), decimals(), true);
 
         _withdraw(_msgSender(), receiver, owner, assets, shares);
 
@@ -118,34 +132,63 @@ contract sBold is ERC4626, BaseSBold {
     }
 
     /// @notice Swaps collateral balances to $BOLD.
-    /// @param data The swap data.
+    /// @param swapData The swap data.
     /// @param receiver The reward receiver.
-    function swap(bytes[] memory data, address receiver) public whenNotPaused {
-        if (data.length != sps.length) revert InvalidDataArray();
+    function swap(SwapData[] memory swapData, address receiver) public whenNotPaused nonReentrant {
+        address bold = asset();
 
-        IERC20 bold = IERC20(asset());
-
-        // Claim collateral from all
-        SpLogic.claimAllCollGains(sps);
-        // Aggregate collateral balances
-        CollBalance[] memory balances = SpLogic.getCollBalances(sps, true);
+        // Prepare swap data and claim collateral.
+        SwapDataWithColl[] memory swapDataWithColl = SwapLogic.prepareSwap(bold, priceOracle, sps, swapData);
         // Execute swaps for each collateral to $BOLD
-        uint256 assets = SwapLogic.swap(
-            swapAdapter,
-            priceOracle,
-            balances,
-            data,
-            maxSlippage,
-            address(bold),
-            decimals()
-        );
+        uint256 assets = SwapLogic.swap(bold, swapAdapter, swapDataWithColl, maxSlippage);
 
-        (uint256 assetsNet, uint256 swapFee, uint256 reward) = SwapLogic.applyFees(assets, swapFeeBps, rewardBps);
+        (, uint256 swapFee, uint256 reward) = SwapLogic.applyFees(assets, swapFeeBps, rewardBps);
 
-        if (swapFee > 0) SafeERC20.safeTransfer(bold, vault, swapFee);
-        if (reward > 0) SafeERC20.safeTransfer(bold, receiver, reward);
+        IERC20 iBold = IERC20(bold);
 
-        SpLogic.provideToSP(sps, assetsNet);
+        if (swapFee > 0) SafeERC20.safeTransfer(iBold, vault, swapFee);
+        if (reward > 0) SafeERC20.safeTransfer(iBold, receiver, reward);
+
+        // Get total assets and subtract dead share
+        uint256 assetsInternal = ERC20(bold).balanceOf(address(this));
+        uint256 deadShareAmount = 10 ** decimals();
+        // Get total assets and subtract dead share.
+        uint256 assetsToProvide = assetsInternal > deadShareAmount ? assetsInternal - deadShareAmount : assetsInternal;
+
+        SpLogic.provideToSP(sps, assetsToProvide);
+    }
+
+    /// @notice This function is able to both re-balance in terms of weights and change entirely current SPs.
+    /// @param _sps The Stability Pools memory array.
+    /// @param _swapData The swap data.
+    function rebalanceSPs(SPConfig[] calldata _sps, SwapData[] memory _swapData) external onlyOwner nonReentrant {
+        address bold = asset();
+
+        // Prepare swap data and claim collateral.
+        SwapDataWithColl[] memory swapDataWithColl = SwapLogic.prepareSwap(bold, priceOracle, sps, _swapData);
+        // Execute swaps for each collateral to $BOLD.
+        SwapLogic.swap(bold, swapAdapter, swapDataWithColl, maxSlippage);
+
+        _checkCollHealth(true);
+
+        uint256 _totalSupply = totalSupply();
+        // Withdraw all assets from current SPs.
+        SpLogic.withdrawFromSP(sps, _totalSupply, _totalSupply, decimals(), false);
+
+        uint256 assetsInternal = ERC20(bold).balanceOf(address(this));
+        uint256 deadShareAmount = 10 ** decimals();
+        // Get total assets and subtract dead share.
+        uint256 assetsToProvide = assetsInternal > deadShareAmount ? assetsInternal - deadShareAmount : assetsInternal;
+
+        // Sanitize
+        delete sps;
+        // Set new SPs.
+        _setSPs(_sps);
+
+        // Provide all assets to new SPs.
+        SpLogic.provideToSP(sps, assetsToProvide);
+
+        emit Rebalance(_sps);
     }
 
     /*//////////////////////////////////////////////////////////////
@@ -154,28 +197,36 @@ contract sBold is ERC4626, BaseSBold {
 
     /// @dev Max deposit returns 0 if collateral is above max. See {IERC4626-maxDeposit}.
     function maxDeposit(address account) public view override returns (uint256) {
-        if (!_checkCollHealth(false)) return 0;
+        (bool success, , ) = _checkCollHealth(false);
+
+        if (!success || paused()) return 0;
 
         return super.maxDeposit(account);
     }
 
     /// @dev Max mint returns 0 if collateral is above max. See {IERC4626-maxMint}.
     function maxMint(address account) public view override returns (uint256) {
-        if (!_checkCollHealth(false)) return 0;
+        (bool success, , ) = _checkCollHealth(false);
+
+        if (!success || paused()) return 0;
 
         return super.maxMint(account);
     }
 
     /// @dev Max withdraw returns 0 if collateral is above max. See {IERC4626-maxWithdraw}.
     function maxWithdraw(address owner) public view override returns (uint256) {
-        if (!_checkCollHealth(false)) return 0;
+        (bool success, , ) = _checkCollHealth(false);
+
+        if (!success || paused()) return 0;
 
         return super.maxWithdraw(owner);
     }
 
     /// @dev Max redeem returns 0 if collateral is above max. See {IERC4626-maxRedeem}.
     function maxRedeem(address owner) public view override returns (uint256) {
-        if (!_checkCollHealth(false)) return 0;
+        (bool success, , ) = _checkCollHealth(false);
+
+        if (!success || paused()) return 0;
 
         return super.maxRedeem(owner);
     }
@@ -198,6 +249,24 @@ contract sBold is ERC4626, BaseSBold {
         return assets + _calcFee(assets);
     }
 
+    /// @dev Total underlying assets owned by the sBOLD contract which are utilized in stability pools.
+    function totalAssets() public view virtual override returns (uint256) {
+        (uint256 totalBold, , , ) = calcFragments();
+
+        return totalBold;
+    }
+
+    /*//////////////////////////////////////////////////////////////
+                                TRANSIENT
+    //////////////////////////////////////////////////////////////*/
+
+    /// @inheritdoc BaseSBold
+    function _checkAndStoreCollValueInBold() internal virtual override {
+        (, uint256 collValue, uint256 collInBold) = _checkCollHealth(true);
+        // Transient store for collaterals and flag
+        TransientStorage.storeCollValues(collValue, collInBold);
+    }
+
     /*//////////////////////////////////////////////////////////////
                                GETTERS
     //////////////////////////////////////////////////////////////*/
@@ -217,7 +286,7 @@ contract sBold is ERC4626, BaseSBold {
         // Get compounded $BOLD amount
         uint256 boldAmount = SpLogic.getBoldAssets(sps, IERC20(bold));
         // Get collateral value in USD and $BOLD
-        (uint256 collValue, uint256 collInBold) = _calcCollValue(bold);
+        (, uint256 collValue, uint256 collInBold) = _calcCollValue(bold, true);
         // Calculate based on the minimum amount to be received after swap
         uint256 collToBoldMinOut = SwapLogic.calcMinOut(collInBold, maxSlippage);
         // Apply fees after swap
@@ -230,31 +299,56 @@ contract sBold is ERC4626, BaseSBold {
         // `maxCollInBold` should be around the breakeven for the swap caller.
         uint256 _maxCollInBold = maxCollInBold > collInBold ? collInBold : maxCollInBold;
 
-        return (totalBold - _maxCollInBold, boldAmount, collValue, collInBold);
+        return (_maxCollInBold > totalBold ? 0 : totalBold - _maxCollInBold, boldAmount, collValue, collInBold);
     }
 
     /// @notice Converts the $BOLD assets to shares based on $sBOLD exchange rate.
     /// @return The calculated $sBOLD share, based on the total value held.
     function _convertToShares(uint256 assets, Math.Rounding rounding) internal view override returns (uint256) {
-        return assets.mulDiv(10 ** decimals(), getSBoldRate(), rounding);
+        return assets.mulDiv(10 ** decimals(), _getSBoldRateWithRounding(rounding), rounding);
     }
 
     /// @notice Converts the $sBOLD shares to $BOLD assets based on $sBOLD exchange rate.
     /// @return The calculated $BOLD assets, based on the total value held.
     function _convertToAssets(uint256 shares, Math.Rounding rounding) internal view override returns (uint256) {
-        return shares.mulDiv(getSBoldRate(), 10 ** decimals(), rounding);
+        return shares.mulDiv(_getSBoldRateWithRounding(rounding), 10 ** decimals(), rounding);
+    }
+
+    /// @notice Calculates the $sBOLD:BOLD rate with input rounding.
+    /// @param rounding Type of rounding on math calculations.
+    /// @return The $sBOLD:$BOLD rate.
+    function _getSBoldRateWithRounding(Math.Rounding rounding) private view returns (uint256) {
+        (uint256 totalBold, , , ) = calcFragments();
+
+        return (totalBold + 1).mulDiv(10 ** decimals(), totalSupply() + 10 ** _decimalsOffset(), rounding);
     }
 
     /// @notice Calculates the collateral value in USD and $BOLD from all SPs.
-    /// @return The total value collateral value and the collateral denominated in $BOLD.
-    function _calcCollValue(address _bold) private view returns (uint256, uint256) {
+    /// @param _bold Asset contract address.
+    /// @param _revert Indication to revert on errors.
+    /// @return success Success result from function.
+    /// @return collValue The total collateral value.
+    /// @return collInBold The collateral value denominated in $BOLD.
+    function _calcCollValue(
+        address _bold,
+        bool _revert
+    ) private view returns (bool success, uint256 collValue, uint256 collInBold) {
+        // Return values from transient storage
+        if (TransientStorage.loadCollsFlag())
+            return (true, TransientStorage.loadCollValue(), TransientStorage.loadCollInBold());
+
         CollBalance[] memory collBalances = SpLogic.getCollBalances(sps, false);
 
-        uint256 collValue = QuoteLogic.getAggregatedQuote(priceOracle, collBalances);
-        uint256 boldUnitQuote = priceOracle.getQuote(10 ** decimals(), _bold);
-        uint256 collInBold = boldUnitQuote.mulDiv(collValue, 10 ** Constants.ORACLE_PRICE_PRECISION);
+        (success, collValue) = QuoteLogic.getAggregatedQuote(priceOracle, collBalances, _revert);
 
-        return (collValue, Decimals.scale(collInBold, decimals()));
+        if (success)
+            try priceOracle.getQuote(10 ** decimals(), _bold) returns (uint256 boldUnitQuote) {
+                collInBold = collValue.mulDiv(10 ** Constants.ORACLE_PRICE_PRECISION, boldUnitQuote);
+            } catch (bytes memory data) {
+                if (_revert) revert(string(data));
+
+                return (false, collValue, 0);
+            }
     }
 
     /// @dev Calculates the fees that should be added to an amount `assets` that does not already include fees.
@@ -267,14 +361,16 @@ contract sBold is ERC4626, BaseSBold {
                                VALIDATIONS
     //////////////////////////////////////////////////////////////*/
 
-    /// @notice Checks if the collateral value in USD is over the maximum allowed.
-    function _checkCollHealth(bool _revert) private view returns (bool) {
-        (, uint256 collValueInBold) = _calcCollValue(asset());
+    /// @notice Checks if the collateral value in $BOLD is over the maximum allowed.
+    function _checkCollHealth(bool _revert) private view returns (bool, uint256, uint256) {
+        (bool success, uint256 collValue, uint256 collValueInBold) = _calcCollValue(asset(), _revert);
 
-        if (collValueInBold <= maxCollInBold) return true;
+        if (!success) return (false, 0, 0);
+
+        if (collValueInBold <= maxCollInBold) return (true, collValue, collValueInBold);
 
         if (_revert) revert CollOverLimit();
 
-        return false;
+        return (false, collValue, collValueInBold);
     }
 }

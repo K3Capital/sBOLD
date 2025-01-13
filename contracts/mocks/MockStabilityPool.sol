@@ -10,6 +10,7 @@ contract MockStabilityPool {
     uint256 compoundedBoldGain;
     uint256 pendingBoldGain;
     uint256 collGain;
+    uint256 stashedCollAmount;
     uint256 transferCollateralAmount;
     address bold;
     address coll;
@@ -35,14 +36,16 @@ contract MockStabilityPool {
         IBoldToken(bold).sendToPool(msg.sender, address(this), _amount);
     }
 
-    function withdrawFromSP(uint256 _amount, bool) external {
+    function withdrawFromSP(uint256 _amount, bool doClaim) external {
         require(!doRevert, "MockSP: call failed");
-        IERC20(bold).transfer(msg.sender, _amount);
-        IERC20(coll).transfer(msg.sender, transferCollateralAmount);
-    }
 
-    function claimAllCollGains() external {
-        require(!doRevert, "MockSP: call failed");
+        if (doClaim) {
+            _amount += pendingBoldGain;
+            collGain = 0;
+            stashedCollAmount = 0;
+        }
+
+        IERC20(bold).transfer(msg.sender, _amount);
         IERC20(coll).transfer(msg.sender, transferCollateralAmount);
     }
 
@@ -50,8 +53,20 @@ contract MockStabilityPool {
         collGain = _collGain;
     }
 
+    function setDepositorYieldGainWithPending(uint256 _pendingBoldGain) external returns (uint256) {
+        pendingBoldGain = _pendingBoldGain;
+    }
+
     function getDepositorYieldGainWithPending(address) external view returns (uint256) {
         return pendingBoldGain;
+    }
+
+    function setStashedColl(uint256 _stashedColl) external {
+        stashedCollAmount = _stashedColl;
+    }
+
+    function stashedColl(address) external view returns (uint256) {
+        return stashedCollAmount;
     }
 
     function getCompoundedBoldDeposit(address) external view returns (uint256) {

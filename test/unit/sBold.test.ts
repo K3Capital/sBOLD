@@ -1,11 +1,10 @@
 import { expect } from 'chai';
 import { ethers } from 'hardhat';
-import { getContractAddress } from '@ethersproject/address';
 import { loadFixture } from '@nomicfoundation/hardhat-network-helpers';
-import { ZeroAddress, getCreateAddress } from 'ethers';
+import { MaxInt256, ZeroAddress, getCreateAddress } from 'ethers';
 import { Signer } from 'ethers';
 import { MockBold, MockERC20, MockPriceOracle, MockRouter, MockStabilityPool, SBold } from '../../types';
-import { ONE_ETH, SWAP_INTERFACE, WEIGHTS } from './utils/constants';
+import { BPS_DENOMINATOR, ONE_ETH, SWAP_INTERFACE, WEIGHTS } from './utils/constants';
 import { calcAssetsInSPs } from './utils/helpers';
 
 const name = 'BOLD:stETH';
@@ -394,6 +393,14 @@ describe('sBold', async function () {
     it('should revert to set vault with zero address', async function () {
       await expect(sBold.setVault(ZeroAddress)).to.be.rejectedWith('InvalidAddress');
     });
+
+    it('should revert to set vault with bold address', async function () {
+      await expect(sBold.setVault(bold.target)).to.be.rejectedWith('InvalidAddress');
+    });
+
+    it('should revert to set vault with sBold address', async function () {
+      await expect(sBold.setVault(sBold.target)).to.be.rejectedWith('InvalidAddress');
+    });
   });
 
   describe('#setFees', function () {
@@ -455,7 +462,7 @@ describe('sBold', async function () {
     });
 
     it('should revert to set reward with value above the maximum', async function () {
-      const rewardBps = 10001;
+      const rewardBps = 1001;
 
       await expect(sBold.setReward(rewardBps)).to.be.rejectedWith('InvalidConfiguration');
     });
@@ -501,6 +508,14 @@ describe('sBold', async function () {
     it('should revert to set swap adapter with zero address', async function () {
       await expect(sBold.setSwapAdapter(ZeroAddress)).to.be.rejectedWith('InvalidAddress');
     });
+
+    it('should revert to set swap adapter with bold address', async function () {
+      await expect(sBold.setSwapAdapter(bold.target)).to.be.rejectedWith('InvalidAddress');
+    });
+
+    it('should revert to set swap adapter with some of the SP addresses', async function () {
+      await expect(sBold.setSwapAdapter(sp0.target)).to.be.rejectedWith('InvalidAddress');
+    });
   });
 
   describe('#setMaxCollInBold', function () {
@@ -528,6 +543,24 @@ describe('sBold', async function () {
       const maxCollInBold = ethers.parseEther('7501');
 
       await expect(sBold.setMaxCollInBold(maxCollInBold)).to.be.rejectedWith('InvalidConfiguration');
+    });
+  });
+
+  describe('#totalAssets', function () {
+    it('should get correct amount of total BOLD asset', async function () {
+      await sp0.setCompoundedBoldDeposit(ONE_ETH);
+      await sp1.setCompoundedBoldDeposit(ONE_ETH);
+      await sp2.setCompoundedBoldDeposit(ONE_ETH);
+
+      await sp0.setDepositorYieldGainWithPending(ONE_ETH);
+      await sp1.setDepositorYieldGainWithPending(ONE_ETH);
+      await sp2.setDepositorYieldGainWithPending(ONE_ETH);
+
+      const boldAmount = await sBold.totalAssets();
+
+      const expectedBoldAmount = BigInt(ONE_ETH) * BigInt(6) + (await bold.balanceOf(sBold.getAddress()));
+
+      expect(expectedBoldAmount).to.eq(boldAmount);
     });
   });
 
@@ -633,6 +666,49 @@ describe('sBold', async function () {
         expect(collInUsd).to.eq(quote);
       });
     });
+
+    it(`should return 0 for totalBold if the diff between collInBoldNet and collInBold is higher than the current total bold.`, async function () {
+      const maxCollInBold = BigInt(7500);
+      const ownerAddress = await owner.getAddress();
+      const amount = ethers.parseEther('1');
+      const yieldGain = ethers.parseEther('0.1');
+      const accumulatedColl = ONE_ETH;
+      const collToUsd = ethers.parseEther('600');
+      const quote = (accumulatedColl * collToUsd) / ONE_ETH;
+
+      // setup
+      await bold.mint(amount);
+      await bold.approve(sBold.target, amount);
+      const feeBps = 500;
+      const swapFeeBps = 500;
+      await sBold.setFees(feeBps, swapFeeBps);
+
+      // Set quote for $BOLD - $BOLD = 1 USD
+      await priceOracle.setQuote(bold.target, ONE_ETH);
+
+      // deposit
+      await sBold.deposit(ONE_ETH, ownerAddress);
+
+      // 1 $BOLD = 1 USD => 1 ** 1e18
+      await sp0.setCompoundedBoldDeposit(amount + yieldGain);
+      // $BOLD = 1 USD
+      await priceOracle.setQuote(bold.target, ONE_ETH);
+
+      // 1 collateral = 2245 USD => 2245 ** 1e18
+      await sp0.setDepositorCollGain(accumulatedColl);
+      // amount * collateral price to USD
+      await priceOracle.setQuote(stETH.target, quote);
+
+      let maxCollInBoldScaled = maxCollInBold * ONE_ETH;
+
+      // set max collateral in $BOLD
+      // *this amount should be disregarded in each operation before it swapped to the primary $BOLD asset
+      await sBold.setMaxCollInBold(maxCollInBoldScaled);
+
+      const [totalInBold, ,] = await sBold.calcFragments();
+
+      expect(totalInBold).to.eq(0);
+    });
   });
 
   describe('#maxDeposit', function () {
@@ -648,6 +724,46 @@ describe('sBold', async function () {
       // setup
       await bold.mint(ONE_ETH);
       await bold.approve(sBold.target, ONE_ETH);
+
+      expect(await sBold.maxDeposit(ownerAddress)).to.be.eq(0);
+    });
+
+    it('should return 0 if sBOLD is paused', async function () {
+      const ownerAddress = await owner.getAddress();
+
+      // setup
+      await sBold.pause();
+
+      // deposit
+      expect(await sBold.maxDeposit(ownerAddress)).to.be.eq(0);
+    });
+
+    it('should return 0 when external call to oracle for collateral fails', async function () {
+      const ownerAddress = await owner.getAddress();
+
+      const quote = 1000;
+      await sp0.setDepositorCollGain(quote);
+
+      // setup
+      await priceOracle.setQuote(bold.target, ONE_ETH);
+      await priceOracle.setQuote(stETH.target, quote);
+
+      await priceOracle.setRevert(stETH.target, true);
+
+      expect(await sBold.maxDeposit(ownerAddress)).to.be.eq(0);
+    });
+
+    it('should return 0 when external call to oracle for $BOLD fails', async function () {
+      const ownerAddress = await owner.getAddress();
+
+      const quote = 1000;
+      await sp0.setDepositorCollGain(quote);
+
+      // setup
+      await priceOracle.setQuote(bold.target, ONE_ETH);
+      await priceOracle.setQuote(stETH.target, quote);
+
+      await priceOracle.setRevert(bold.target, true);
 
       expect(await sBold.maxDeposit(ownerAddress)).to.be.eq(0);
     });
@@ -669,6 +785,46 @@ describe('sBold', async function () {
 
       expect(await sBold.maxMint(ownerAddress)).to.be.eq(0);
     });
+
+    it('should return 0 if sBOLD is paused', async function () {
+      const ownerAddress = await owner.getAddress();
+
+      // setup
+      await sBold.pause();
+
+      // deposit
+      expect(await sBold.maxMint(ownerAddress)).to.be.eq(0);
+    });
+
+    it('should return 0 when external call to oracle for collateral fails', async function () {
+      const ownerAddress = await owner.getAddress();
+
+      const quote = 1000;
+      await sp0.setDepositorCollGain(quote);
+
+      // setup
+      await priceOracle.setQuote(bold.target, ONE_ETH);
+      await priceOracle.setQuote(stETH.target, quote);
+
+      await priceOracle.setRevert(stETH.target, true);
+
+      expect(await sBold.maxMint(ownerAddress)).to.be.eq(0);
+    });
+
+    it('should return 0 when external call to oracle for $BOLD fails', async function () {
+      const ownerAddress = await owner.getAddress();
+
+      const quote = 1000;
+      await sp0.setDepositorCollGain(quote);
+
+      // setup
+      await priceOracle.setQuote(bold.target, ONE_ETH);
+      await priceOracle.setQuote(stETH.target, quote);
+
+      await priceOracle.setRevert(bold.target, true);
+
+      expect(await sBold.maxMint(ownerAddress)).to.be.eq(0);
+    });
   });
 
   describe('#maxWithdraw', function () {
@@ -687,6 +843,46 @@ describe('sBold', async function () {
 
       expect(await sBold.maxWithdraw(ownerAddress)).to.be.eq(0);
     });
+
+    it('should return 0 if sBOLD is paused', async function () {
+      const ownerAddress = await owner.getAddress();
+
+      // setup
+      await sBold.pause();
+
+      // deposit
+      expect(await sBold.maxWithdraw(ownerAddress)).to.be.eq(0);
+    });
+
+    it('should return 0 when external call to oracle for collateral fails', async function () {
+      const ownerAddress = await owner.getAddress();
+
+      const quote = 1000;
+      await sp0.setDepositorCollGain(quote);
+
+      // setup
+      await priceOracle.setQuote(bold.target, ONE_ETH);
+      await priceOracle.setQuote(stETH.target, quote);
+
+      await priceOracle.setRevert(stETH.target, true);
+
+      expect(await sBold.maxWithdraw(ownerAddress)).to.be.eq(0);
+    });
+
+    it('should return 0 when external call to oracle for $BOLD fails', async function () {
+      const ownerAddress = await owner.getAddress();
+
+      const quote = 1000;
+      await sp0.setDepositorCollGain(quote);
+
+      // setup
+      await priceOracle.setQuote(bold.target, ONE_ETH);
+      await priceOracle.setQuote(stETH.target, quote);
+
+      await priceOracle.setRevert(bold.target, true);
+
+      expect(await sBold.maxWithdraw(ownerAddress)).to.be.eq(0);
+    });
   });
 
   describe('#maxRedeem', function () {
@@ -702,6 +898,46 @@ describe('sBold', async function () {
       // setup
       await bold.mint(ONE_ETH);
       await bold.approve(sBold.target, ONE_ETH);
+
+      expect(await sBold.maxRedeem(ownerAddress)).to.be.eq(0);
+    });
+
+    it('should return 0 if sBOLD is paused', async function () {
+      const ownerAddress = await owner.getAddress();
+
+      // setup
+      await sBold.pause();
+
+      // deposit
+      expect(await sBold.maxRedeem(ownerAddress)).to.be.eq(0);
+    });
+
+    it('should return 0 when external call to oracle for collateral fails', async function () {
+      const ownerAddress = await owner.getAddress();
+
+      const quote = 1000;
+      await sp0.setDepositorCollGain(quote);
+
+      // setup
+      await priceOracle.setQuote(bold.target, ONE_ETH);
+      await priceOracle.setQuote(stETH.target, quote);
+
+      await priceOracle.setRevert(stETH.target, true);
+
+      expect(await sBold.maxRedeem(ownerAddress)).to.be.eq(0);
+    });
+
+    it('should return 0 when external call to oracle for $BOLD fails', async function () {
+      const ownerAddress = await owner.getAddress();
+
+      const quote = 1000;
+      await sp0.setDepositorCollGain(quote);
+
+      // setup
+      await priceOracle.setQuote(bold.target, ONE_ETH);
+      await priceOracle.setQuote(stETH.target, quote);
+
+      await priceOracle.setRevert(bold.target, true);
 
       expect(await sBold.maxRedeem(ownerAddress)).to.be.eq(0);
     });
@@ -739,8 +975,14 @@ describe('sBold', async function () {
         await bold.mint(depositAssetsAmount);
         await bold.approve(sBold.target, depositAssetsAmount);
 
+        const previewDeposit = await sBold.previewDeposit(ONE_ETH);
+
         // deposit
         await sBold.deposit(ONE_ETH, ownerAddress);
+
+        const expPreview = ONE_ETH - (ONE_ETH * feeBps) / BigInt(10_000);
+
+        expect(previewDeposit).to.eq(expPreview);
 
         // update
         // one $BOLD * (1 - fee)
@@ -839,6 +1081,36 @@ describe('sBold', async function () {
       await expect(sBold.deposit(ONE_ETH, ownerAddress)).to.be.rejectedWith('CollOverLimit');
     });
 
+    it('should revert if call to oracle for collateral fails', async function () {
+      const ownerAddress = await owner.getAddress();
+
+      const quote = 1000;
+      await sp0.setDepositorCollGain(quote);
+
+      await priceOracle.setQuote(bold.target, ONE_ETH);
+      await priceOracle.setQuote(stETH.target, quote);
+
+      await priceOracle.setRevert(stETH.target, true);
+
+      // setup
+      await expect(sBold.deposit(ONE_ETH, ownerAddress)).to.be.rejected;
+    });
+
+    it('should revert if call to oracle for $BOLD fails', async function () {
+      const ownerAddress = await owner.getAddress();
+
+      const quote = 1000;
+      await sp0.setDepositorCollGain(quote);
+
+      await priceOracle.setQuote(bold.target, ONE_ETH);
+      await priceOracle.setQuote(stETH.target, quote);
+
+      await priceOracle.setRevert(bold.target, true);
+
+      // setup
+      await expect(sBold.deposit(ONE_ETH, ownerAddress)).to.be.rejected;
+    });
+
     it('should revert to deposit if sBOLD is paused', async function () {
       const ownerAddress = await owner.getAddress();
 
@@ -885,18 +1157,40 @@ describe('sBold', async function () {
         await bold.mint(mintShareAmount + fee);
         await bold.approve(sBold.target, mintShareAmount + fee);
 
+        const previewMint = await sBold.previewMint(ONE_ETH);
+
+        let vaultBalanceBefore = await bold.balanceOf(vault.getAddress());
+        let ownerBalanceBefore = await bold.balanceOf(owner.getAddress());
+
         // mint
         await sBold.mint(ONE_ETH, ownerAddress);
+
+        let vaultBalanceAfter = await bold.balanceOf(vault.getAddress());
+        let ownerBalanceAfter = await bold.balanceOf(owner.getAddress());
+
+        const expPreview = ONE_ETH + (ONE_ETH * feeBps) / BigInt(10_000);
+
+        expect(previewMint).to.eq(expPreview);
+        expect(vaultBalanceBefore + fee / BigInt(2)).to.eq(vaultBalanceAfter);
+        expect(ownerBalanceBefore).to.eq(ownerBalanceAfter + ONE_ETH + fee / BigInt(2));
 
         // update
         await sp0.setCompoundedBoldDeposit(ONE_ETH);
         await priceOracle.setQuote(bold.target, ONE_ETH);
 
+        vaultBalanceBefore = await bold.balanceOf(vault.getAddress());
+        ownerBalanceBefore = await bold.balanceOf(owner.getAddress());
+
         // mint
         await sBold.mint(ONE_ETH, ownerAddress);
 
+        vaultBalanceAfter = await bold.balanceOf(vault.getAddress());
+        ownerBalanceAfter = await bold.balanceOf(owner.getAddress());
+
         const sBoldBalanceOwner = await sBold.balanceOf(ownerAddress);
         expect(sBoldBalanceOwner).to.eq(mintShareAmount);
+        expect(vaultBalanceBefore + fee / BigInt(2)).to.eq(vaultBalanceAfter);
+        expect(ownerBalanceBefore).to.eq(ownerBalanceAfter + ONE_ETH + fee / BigInt(2));
       });
     });
 
@@ -958,9 +1252,9 @@ describe('sBold', async function () {
 
       const expBalanceInSPsTotal = calcAssetsInSPs(total);
 
-      expect(boldBalanceSP0).to.eq(expBalanceInSPsTotal[0] - BigInt(1));
-      expect(boldBalanceSP1).to.eq(expBalanceInSPsTotal[1] - BigInt(1));
-      expect(boldBalanceSP2).to.eq(expBalanceInSPsTotal[2] - BigInt(1));
+      expect(boldBalanceSP0).to.eq(expBalanceInSPsTotal[0]);
+      expect(boldBalanceSP1).to.eq(expBalanceInSPsTotal[1]);
+      expect(boldBalanceSP2).to.eq(expBalanceInSPsTotal[2]);
 
       const totalSupply1 = await sBold.totalSupply();
 
@@ -1001,6 +1295,36 @@ describe('sBold', async function () {
       await expect(sBold.mint(ONE_ETH, ownerAddress)).to.be.rejectedWith('CollOverLimit');
     });
 
+    it('should revert if call to oracle for collateral fails', async function () {
+      const ownerAddress = await owner.getAddress();
+
+      const quote = 1000;
+      await sp0.setDepositorCollGain(quote);
+
+      await priceOracle.setQuote(bold.target, ONE_ETH);
+      await priceOracle.setQuote(stETH.target, quote);
+
+      await priceOracle.setRevert(stETH.target, true);
+
+      // setup
+      await expect(sBold.mint(ONE_ETH, ownerAddress)).to.be.rejected;
+    });
+
+    it('should revert if call to oracle for $BOLD fails', async function () {
+      const ownerAddress = await owner.getAddress();
+
+      const quote = 1000;
+      await sp0.setDepositorCollGain(quote);
+
+      await priceOracle.setQuote(bold.target, ONE_ETH);
+      await priceOracle.setQuote(stETH.target, quote);
+
+      await priceOracle.setRevert(bold.target, true);
+
+      // setup
+      await expect(sBold.mint(ONE_ETH, ownerAddress)).to.be.rejected;
+    });
+
     it('should revert to mint if sBOLD is paused', async function () {
       const ownerAddress = await owner.getAddress();
 
@@ -1024,30 +1348,52 @@ describe('sBold', async function () {
       await sBold.deposit(ONE_ETH, ownerAddress);
 
       // appreciate
-      const yieldGain = ethers.parseEther('0.1');
-      const updatedCompBold = ONE_ETH + yieldGain;
+      const pendingGains = ethers.parseEther('0.1');
+      const compBold = ONE_ETH;
+
+      let compBoldInSpsAndPending = calcAssetsInSPs(compBold + pendingGains);
+      let compBoldInSps = calcAssetsInSPs(compBold);
+      let pendingGainsInSPs = calcAssetsInSPs(pendingGains);
 
       // stub amounts
-      await bold.mintTo(sp0.target, updatedCompBold);
-      await bold.mintTo(sp1.target, updatedCompBold);
-      await bold.mintTo(sp2.target, updatedCompBold);
+      await bold.mintTo(sp0.target, compBoldInSpsAndPending[0]);
+      await bold.mintTo(sp1.target, compBoldInSpsAndPending[1]);
+      await bold.mintTo(sp2.target, compBoldInSpsAndPending[2]);
 
-      let assetsInSPs = calcAssetsInSPs(updatedCompBold);
+      // set compounded yield
+      await sp0.setCompoundedBoldDeposit(compBoldInSps[0]);
+      await sp1.setCompoundedBoldDeposit(compBoldInSps[1]);
+      await sp2.setCompoundedBoldDeposit(compBoldInSps[2]);
 
-      await sp0.setCompoundedBoldDeposit(assetsInSPs[0]);
-      await sp1.setCompoundedBoldDeposit(assetsInSPs[1]);
-      await sp2.setCompoundedBoldDeposit(assetsInSPs[2]);
-
-      await priceOracle.setQuote(bold.target, ONE_ETH);
+      // set pending yield
+      await sp0.setDepositorYieldGainWithPending(pendingGainsInSPs[0]);
+      await sp1.setDepositorYieldGainWithPending(pendingGainsInSPs[1]);
+      await sp2.setDepositorYieldGainWithPending(pendingGainsInSPs[2]);
 
       const maxWithdraw = await sBold.maxWithdraw(ownerAddress);
+
+      const sp0BalanceBefore = await bold.balanceOf(sp0.target);
+      const sp1BalanceBefore = await bold.balanceOf(sp1.target);
+      const sp2BalanceBefore = await bold.balanceOf(sp2.target);
 
       // withdraw
       await sBold.withdraw(maxWithdraw, ownerAddress, ownerAddress);
 
-      const expCompoundedBoldBalance = ONE_ETH + yieldGain / BigInt(2) - BigInt(1);
+      const sp0BalanceAfter = await bold.balanceOf(sp0.target);
+      const sp1BalanceAfter = await bold.balanceOf(sp1.target);
+      const sp2BalanceAfter = await bold.balanceOf(sp2.target);
+
+      const deltaSP0 = sp0BalanceBefore - sp0BalanceAfter;
+      const deltaSP1 = sp1BalanceBefore - sp1BalanceAfter;
+      const deltaSP2 = sp2BalanceBefore - sp2BalanceAfter;
+
+      const expCompoundedBoldBalance = ONE_ETH + pendingGains / BigInt(2) - BigInt(1);
       const compoundedBoldBalance = await bold.balanceOf(ownerAddress);
+
       expect(compoundedBoldBalance).to.eq(expCompoundedBoldBalance);
+      expect(deltaSP0).to.eq((compBoldInSps[0] + pendingGainsInSPs[0]) / BigInt(2));
+      expect(deltaSP1).to.eq((compBoldInSps[1] + pendingGainsInSPs[1]) / BigInt(2));
+      expect(deltaSP2).to.eq((compBoldInSps[2] + pendingGainsInSPs[2]) / BigInt(2));
     });
 
     it('should withdraw based on portion and not account 0 amounts from SPs', async function () {
@@ -1262,6 +1608,36 @@ describe('sBold', async function () {
       await expect(sBold.withdraw(maxWithdraw, ownerAddress, ownerAddress)).to.be.rejectedWith('CollOverLimit');
     });
 
+    it('should revert if call to oracle for collateral fails', async function () {
+      const ownerAddress = await owner.getAddress();
+
+      const quote = 1000;
+      await sp0.setDepositorCollGain(quote);
+
+      await priceOracle.setQuote(bold.target, ONE_ETH);
+      await priceOracle.setQuote(stETH.target, quote);
+
+      await priceOracle.setRevert(stETH.target, true);
+
+      // setup
+      await expect(sBold.withdraw(ONE_ETH, ownerAddress, ownerAddress)).to.be.rejected;
+    });
+
+    it('should revert if call to oracle for $BOLD fails', async function () {
+      const ownerAddress = await owner.getAddress();
+
+      const quote = 1000;
+      await sp0.setDepositorCollGain(quote);
+
+      await priceOracle.setQuote(bold.target, ONE_ETH);
+      await priceOracle.setQuote(stETH.target, quote);
+
+      await priceOracle.setRevert(bold.target, true);
+
+      // setup
+      await expect(sBold.withdraw(ONE_ETH, ownerAddress, ownerAddress)).to.be.rejected;
+    });
+
     it('should revert to withdraw if sBOLD is paused', async function () {
       const ownerAddress = await owner.getAddress();
 
@@ -1440,6 +1816,36 @@ describe('sBold', async function () {
       await expect(sBold.redeem(maxRedeem, ownerAddress, ownerAddress)).to.be.rejectedWith('CollOverLimit');
     });
 
+    it('should revert if call to oracle for collateral fails', async function () {
+      const ownerAddress = await owner.getAddress();
+
+      const quote = 1000;
+      await sp0.setDepositorCollGain(quote);
+
+      await priceOracle.setQuote(bold.target, ONE_ETH);
+      await priceOracle.setQuote(stETH.target, quote);
+
+      await priceOracle.setRevert(stETH.target, true);
+
+      // setup
+      await expect(sBold.redeem(ONE_ETH, ownerAddress, ownerAddress)).to.be.rejected;
+    });
+
+    it('should revert if call to oracle for $BOLD fails', async function () {
+      const ownerAddress = await owner.getAddress();
+
+      const quote = 1000;
+      await sp0.setDepositorCollGain(quote);
+
+      await priceOracle.setQuote(bold.target, ONE_ETH);
+      await priceOracle.setQuote(stETH.target, quote);
+
+      await priceOracle.setRevert(bold.target, true);
+
+      // setup
+      await expect(sBold.redeem(ONE_ETH, ownerAddress, ownerAddress)).to.be.rejected;
+    });
+
     it('should revert to redeem if sBOLD is paused', async function () {
       const ownerAddress = await owner.getAddress();
 
@@ -1455,6 +1861,164 @@ describe('sBold', async function () {
 
   describe('#swap', function () {
     [
+      // 0% fees in BPS, $BOLD price is 1e18
+      [BigInt(0), BigInt(0), ONE_ETH],
+      // 0% swap fee in BPS + 5% reward in BPS, $BOLD price is 2e18
+      [BigInt(0), BigInt(500), ONE_ETH * BigInt(2)],
+      // 5% swap fee in BPS + 5% reward in BPS, $BOLD price is 2e18
+      [BigInt(500), BigInt(500), ONE_ETH * BigInt(2)],
+      // 0% fees in BPS, $BOLD price is 5e17
+      [BigInt(0), BigInt(0), ONE_ETH / BigInt(2)],
+    ].forEach(([swapFeeBps, rewardBps, boldPrice]) => {
+      it('should swap collateral to $sBOLD with fees and different quotes for $BOLD', async function () {
+        const ownerAddress = await owner.getAddress();
+
+        // setup
+        await bold.mint(ONE_ETH);
+        await bold.approve(sBold.target, ONE_ETH);
+
+        // deposit
+        await sBold.deposit(ONE_ETH, ownerAddress);
+
+        // appreciate
+        const yieldGain = ethers.parseEther('0.1');
+        const accumulatedColl = ethers.parseEther('0.2');
+        const accumulatedCollStashed = ethers.parseEther('0.2');
+        const updatedCompBold = ONE_ETH + yieldGain;
+        const ethUSDPrice = ethers.parseEther('2000');
+
+        // stub amounts
+        await bold.mintTo(sp0.target, updatedCompBold);
+
+        let assetsInSPs = calcAssetsInSPs(updatedCompBold);
+        let assetsInSPsColl = calcAssetsInSPs(accumulatedColl);
+        let assetsInSPsStashedColl = calcAssetsInSPs(accumulatedCollStashed);
+
+        // set yield gains
+        await sp0.setCompoundedBoldDeposit(assetsInSPs[0]);
+        await sp1.setCompoundedBoldDeposit(assetsInSPs[1]);
+        await sp2.setCompoundedBoldDeposit(assetsInSPs[2]);
+
+        // set collateral gains
+        await sp0.setDepositorCollGain(assetsInSPsColl[0]);
+        await sp1.setDepositorCollGain(assetsInSPsColl[1]);
+        await sp2.setDepositorCollGain(assetsInSPsColl[2]);
+
+        // set stashed collateral
+        await sp0.setStashedColl(assetsInSPsStashedColl[0]);
+        await sp1.setStashedColl(assetsInSPsStashedColl[1]);
+        await sp2.setStashedColl(assetsInSPsStashedColl[2]);
+
+        // set quotes
+        await priceOracle.setQuote(bold.target, boldPrice);
+
+        const quoteStETH = ((assetsInSPsColl[0] + assetsInSPsStashedColl[0]) * ethUSDPrice) / ONE_ETH; // 0.8 * 2000
+        await priceOracle.setQuote(stETH.target, quoteStETH);
+
+        const quoteWstETH = ((assetsInSPsColl[1] + assetsInSPsStashedColl[1]) * ethUSDPrice) / ONE_ETH; // 0.8 * 2000
+        await priceOracle.setQuote(wstETH.target, quoteWstETH);
+
+        const quoteRETH = ((assetsInSPsColl[2] + assetsInSPsStashedColl[2]) * ethUSDPrice) / ONE_ETH; // 0.4 * 2000
+        await priceOracle.setQuote(rETH.target, quoteRETH);
+
+        // Total collateral in USD = 4000 /2 * 2000/, so the swapped $BOLD should be 4000
+
+        // mint $BOLD
+        await bold.mintTo(sp0.target, assetsInSPs[0]);
+        await bold.mintTo(sp1.target, assetsInSPs[1]);
+        await bold.mintTo(sp2.target, assetsInSPs[2]);
+
+        // mint Colls
+        await stETH.mintTo(sp0.target, assetsInSPsColl[0] + assetsInSPsStashedColl[0]);
+        await wstETH.mintTo(sp1.target, assetsInSPsColl[1] + assetsInSPsStashedColl[0]);
+        await rETH.mintTo(sp2.target, assetsInSPsColl[2] + assetsInSPsStashedColl[0]);
+
+        // set Colls to transfer
+        await sp0.setTransferCollAmount(assetsInSPsColl[0] + assetsInSPsStashedColl[0]);
+        await sp1.setTransferCollAmount(assetsInSPsColl[1] + assetsInSPsStashedColl[0]);
+        await sp2.setTransferCollAmount(assetsInSPsColl[2] + assetsInSPsStashedColl[0]);
+
+        // set collateral quotes
+        await router.setQuotes(stETH.target, (quoteStETH * ONE_ETH) / boldPrice);
+        await router.setQuotes(wstETH.target, (quoteWstETH * ONE_ETH) / boldPrice);
+        await router.setQuotes(rETH.target, (quoteRETH * ONE_ETH) / boldPrice);
+
+        await sBold.setSwapAdapter(router.target);
+
+        // build calldata for swap adapter
+        const callData0 = SWAP_INTERFACE.encodeFunctionData('swap', [
+          stETH.target,
+          bold.target,
+          assetsInSPsColl[0] + assetsInSPsStashedColl[0],
+          0,
+          '0x',
+        ]);
+        const callData1 = SWAP_INTERFACE.encodeFunctionData('swap', [
+          wstETH.target,
+          bold.target,
+          assetsInSPsColl[1] + assetsInSPsStashedColl[1],
+          0,
+          '0x',
+        ]);
+        const callData2 = SWAP_INTERFACE.encodeFunctionData('swap', [
+          rETH.target,
+          bold.target,
+          assetsInSPsColl[2] + assetsInSPsStashedColl[2],
+          0,
+          '0x',
+        ]);
+
+        const bal0SP0 = await bold.balanceOf(sp0.target);
+        const bal0SP1 = await bold.balanceOf(sp1.target);
+        const bal0SP2 = await bold.balanceOf(sp2.target);
+
+        // set fee
+        if (swapFeeBps > 0) {
+          await sBold.setFees(0, swapFeeBps);
+        }
+
+        // set reward
+        if (rewardBps > 0) {
+          await sBold.setReward(rewardBps);
+        }
+
+        // execute swap
+        await sBold.swap(
+          [
+            { sp: sp0.target, balance: MaxInt256, data: callData0 },
+            { sp: sp1.target, balance: MaxInt256, data: callData1 },
+            { sp: sp2.target, balance: MaxInt256, data: callData2 },
+          ],
+          ownerAddress,
+        );
+
+        const bal1SP0 = await bold.balanceOf(sp0.target);
+        const bal1SP1 = await bold.balanceOf(sp1.target);
+        const bal1SP2 = await bold.balanceOf(sp2.target);
+
+        const deltaSP0 = bal1SP0 - bal0SP0;
+        const deltaSP1 = bal1SP1 - bal0SP1;
+        const deltaSP2 = bal1SP2 - bal0SP2;
+
+        const swapFeeSP0 = (quoteStETH * BigInt(swapFeeBps)) / BigInt(10_000);
+        const swapFeeSP1 = (quoteWstETH * BigInt(swapFeeBps)) / BigInt(10_000);
+        const swapFeeSP2 = (quoteRETH * BigInt(swapFeeBps)) / BigInt(10_000);
+
+        const rewardSP0 = (quoteStETH * BigInt(rewardBps)) / BigInt(10_000);
+        const rewardSP1 = (quoteWstETH * BigInt(rewardBps)) / BigInt(10_000);
+        const rewardSP2 = (quoteRETH * BigInt(rewardBps)) / BigInt(10_000);
+
+        const expNetSP0 = quoteStETH - swapFeeSP0 - rewardSP0;
+        const expNetSP1 = quoteWstETH - swapFeeSP1 - rewardSP1;
+        const expNetSP2 = quoteRETH - swapFeeSP2 - rewardSP2;
+
+        expect(deltaSP0).to.eq((expNetSP0 * ONE_ETH) / boldPrice);
+        expect(deltaSP1).to.eq((expNetSP1 * ONE_ETH) / boldPrice);
+        expect(deltaSP2).to.eq((expNetSP2 * ONE_ETH) / boldPrice);
+      });
+    });
+
+    [
       // 0% swap fee in BPS
       [0, 0],
       // 0% swap fee in BPS + 5% reward in BPS
@@ -1462,7 +2026,7 @@ describe('sBold', async function () {
       // 5% swap fee in BPS + 5% reward in BPS
       [BigInt(500), BigInt(500)],
     ].forEach(([swapFeeBps, rewardBps]) => {
-      it('should swap collateral to $sBOLD', async function () {
+      it('should swap collateral to $sBOLD for 2/3 number of SPs', async function () {
         const ownerAddress = await owner.getAddress();
 
         // setup
@@ -1487,12 +2051,10 @@ describe('sBold', async function () {
         // set yield gains
         await sp0.setCompoundedBoldDeposit(assetsInSPs[0]);
         await sp1.setCompoundedBoldDeposit(assetsInSPs[1]);
-        await sp2.setCompoundedBoldDeposit(assetsInSPs[2]);
 
         // set collateral gains
         await sp0.setDepositorCollGain(assetsInSPsColl[0]);
         await sp1.setDepositorCollGain(assetsInSPsColl[1]);
-        await sp2.setDepositorCollGain(assetsInSPsColl[2]);
 
         // set quotes
         await priceOracle.setQuote(bold.target, ONE_ETH);
@@ -1506,22 +2068,17 @@ describe('sBold', async function () {
         const quoteRETH = (assetsInSPsColl[2] * ethUSDPrice) / ONE_ETH; // 0.4 * 2000
         await priceOracle.setQuote(rETH.target, quoteRETH);
 
-        // Total collateral in USD = 4000 /2 * 2000/, so the swapped $BOLD should be 4000
-
         // mint $BOLD
         await bold.mintTo(sp0.target, assetsInSPs[0]);
         await bold.mintTo(sp1.target, assetsInSPs[1]);
-        await bold.mintTo(sp2.target, assetsInSPs[2]);
 
         // mint Colls
         await stETH.mintTo(sp0.target, assetsInSPsColl[0]);
         await wstETH.mintTo(sp1.target, assetsInSPsColl[1]);
-        await rETH.mintTo(sp2.target, assetsInSPsColl[2]);
 
         // set Colls to transfer
         await sp0.setTransferCollAmount(assetsInSPsColl[0]);
         await sp1.setTransferCollAmount(assetsInSPsColl[1]);
-        await sp2.setTransferCollAmount(assetsInSPsColl[2]);
 
         // set collateral quotes
         await router.setQuotes(stETH.target, quoteStETH);
@@ -1545,13 +2102,6 @@ describe('sBold', async function () {
           assetsInSPsColl[1],
           '0x',
         ]);
-        const callData2 = SWAP_INTERFACE.encodeFunctionData('swap', [
-          rETH.target,
-          bold.target,
-          assetsInSPsColl[2],
-          assetsInSPsColl[2],
-          '0x',
-        ]);
 
         const bal0SP0 = await bold.balanceOf(sp0.target);
         const bal0SP1 = await bold.balanceOf(sp1.target);
@@ -1568,7 +2118,13 @@ describe('sBold', async function () {
         }
 
         // execute swap
-        await sBold.swap([callData0, callData1, callData2], ownerAddress);
+        await sBold.swap(
+          [
+            { sp: sp0.target, balance: MaxInt256, data: callData0 },
+            { sp: sp1.target, balance: MaxInt256, data: callData1 },
+          ],
+          ownerAddress,
+        );
 
         const bal1SP0 = await bold.balanceOf(sp0.target);
         const bal1SP1 = await bold.balanceOf(sp1.target);
@@ -1580,15 +2136,19 @@ describe('sBold', async function () {
 
         const swapFeeSP0 = (quoteStETH * BigInt(swapFeeBps)) / BigInt(10_000);
         const swapFeeSP1 = (quoteWstETH * BigInt(swapFeeBps)) / BigInt(10_000);
-        const swapFeeSP2 = (quoteRETH * BigInt(swapFeeBps)) / BigInt(10_000);
 
         const rewardSP0 = (quoteStETH * BigInt(rewardBps)) / BigInt(10_000);
         const rewardSP1 = (quoteWstETH * BigInt(rewardBps)) / BigInt(10_000);
-        const rewardSP2 = (quoteRETH * BigInt(rewardBps)) / BigInt(10_000);
 
-        const expNetSP0 = quoteStETH - swapFeeSP0 - rewardSP0;
-        const expNetSP1 = quoteWstETH - swapFeeSP1 - rewardSP1;
-        const expNetSP2 = quoteRETH - swapFeeSP2 - rewardSP2;
+        const expNetSP0 =
+          ((quoteStETH - swapFeeSP0 - rewardSP0) * BigInt(WEIGHTS[0])) / BigInt(10_000) +
+          ((quoteWstETH - swapFeeSP1 - rewardSP1) * BigInt(WEIGHTS[0])) / BigInt(10_000);
+        const expNetSP1 =
+          ((quoteStETH - swapFeeSP0 - rewardSP0) * BigInt(WEIGHTS[1])) / BigInt(10_000) +
+          ((quoteWstETH - swapFeeSP1 - rewardSP1) * BigInt(WEIGHTS[1])) / BigInt(10_000);
+        const expNetSP2 =
+          ((quoteStETH - swapFeeSP0 - rewardSP0) * BigInt(WEIGHTS[2])) / BigInt(10_000) +
+          ((quoteWstETH - swapFeeSP1 - rewardSP1) * BigInt(WEIGHTS[2])) / BigInt(10_000);
 
         expect(deltaSP0).to.eq(expNetSP0);
         expect(deltaSP1).to.eq(expNetSP1);
@@ -1596,49 +2156,127 @@ describe('sBold', async function () {
       });
     });
 
-    it('should fail to swap collateral to $sBOLD with invalid data length', async function () {
-      const ownerAddress = await owner.getAddress();
+    [
+      // 0% swap fee in BPS
+      [0, 0],
+      // 0% swap fee in BPS + 5% reward in BPS
+      [0, BigInt(500)],
+      // 5% swap fee in BPS + 5% reward in BPS
+      [BigInt(500), BigInt(500)],
+    ].forEach(([swapFeeBps, rewardBps]) => {
+      it('should partially swap collateral to $sBOLD for 1/3 number of SPs which should result in idle collateral in protocol', async function () {
+        const ownerAddress = await owner.getAddress();
 
-      // setup
-      await bold.mint(ONE_ETH);
-      await bold.approve(sBold.target, ONE_ETH);
+        // setup
+        await bold.mint(ONE_ETH);
+        await bold.approve(sBold.target, ONE_ETH);
 
-      // deposit
-      await sBold.deposit(ONE_ETH, ownerAddress);
+        // deposit
+        await sBold.deposit(ONE_ETH, ownerAddress);
 
-      // appreciate
-      const yieldGain = ethers.parseEther('0.1');
-      const accumulatedColl = ethers.parseEther('0.2');
-      const updatedCompBold = ONE_ETH + yieldGain;
-      const ethUSDPrice = ethers.parseEther('2000');
+        // appreciate
+        const yieldGain = ethers.parseEther('0.1');
+        const accumulatedColl = ethers.parseEther('0.2');
+        const updatedCompBold = ONE_ETH + yieldGain;
+        const ethUSDPrice = ethers.parseEther('2000');
 
-      await bold.mintTo(sp1.target, updatedCompBold);
+        // stub amounts
+        await bold.mintTo(sp0.target, updatedCompBold);
 
-      // set yield gains
-      await sp1.setCompoundedBoldDeposit(updatedCompBold);
+        let assetsInSPs = calcAssetsInSPs(updatedCompBold);
+        let assetsInSPsColl = calcAssetsInSPs(accumulatedColl);
 
-      // set collateral gains
-      await sp1.setDepositorCollGain(accumulatedColl);
+        // set yield gains
+        await sp0.setCompoundedBoldDeposit(assetsInSPs[0]);
 
-      // mint $BOLD
-      await bold.mintTo(sp1.target, updatedCompBold);
+        // set collateral gains
+        await sp0.setDepositorCollGain(assetsInSPsColl[0]);
 
-      // mint Colls
-      await wstETH.mintTo(sp1.target, accumulatedColl);
+        // set quotes
+        await priceOracle.setQuote(bold.target, ONE_ETH);
 
-      // set Colls to transfer
-      await sp1.setTransferCollAmount(accumulatedColl);
+        const quoteStETH = (assetsInSPsColl[0] * ethUSDPrice) / ONE_ETH; // 0.8 * 2000
+        await priceOracle.setQuote(stETH.target, quoteStETH);
 
-      // set quotes
-      const quoteWstETH = (accumulatedColl * ethUSDPrice) / ONE_ETH; // 0.8 * 2000
+        const quoteWstETH = (assetsInSPsColl[1] * ethUSDPrice) / ONE_ETH; // 0.8 * 2000
+        await priceOracle.setQuote(wstETH.target, quoteWstETH);
 
-      // set collateral quotes
-      await router.setQuotes(stETH.target, quoteWstETH);
+        const quoteRETH = (assetsInSPsColl[2] * ethUSDPrice) / ONE_ETH; // 0.4 * 2000
+        await priceOracle.setQuote(rETH.target, quoteRETH);
 
-      await sBold.setSwapAdapter(router.target);
+        // mint $BOLD
+        await bold.mintTo(sp0.target, assetsInSPs[0]);
 
-      // execute swap
-      await expect(sBold.swap(['0x', '0x'], ownerAddress)).to.be.rejectedWith('InvalidDataArray');
+        // mint Colls
+        await stETH.mintTo(sp0.target, assetsInSPsColl[0]);
+
+        // set Colls to transfer
+        await sp0.setTransferCollAmount(assetsInSPsColl[0]);
+
+        // set collateral quotes
+        await router.setQuotes(stETH.target, quoteStETH);
+        await router.setQuotes(wstETH.target, quoteWstETH);
+        await router.setQuotes(rETH.target, quoteRETH);
+
+        await sBold.setSwapAdapter(router.target);
+
+        // build calldata for swap adapter
+        const callData0 = SWAP_INTERFACE.encodeFunctionData('swap', [
+          stETH.target,
+          bold.target,
+          assetsInSPsColl[0] - BigInt(1),
+          assetsInSPsColl[0],
+          '0x',
+        ]);
+
+        const bal0SP0 = await bold.balanceOf(sp0.target);
+        const bal0SP1 = await bold.balanceOf(sp1.target);
+        const bal0SP2 = await bold.balanceOf(sp2.target);
+
+        const collBalanceBefore = await stETH.balanceOf(sBold.target);
+
+        // set fee
+        if (swapFeeBps > 0) {
+          await sBold.setFees(0, swapFeeBps);
+        }
+
+        // set reward
+        if (rewardBps > 0) {
+          await sBold.setReward(rewardBps);
+        }
+
+        const balanceToSwap = assetsInSPsColl[0] - BigInt(1);
+
+        // execute swap
+        await sBold.swap([{ sp: sp0.target, balance: balanceToSwap, data: callData0 }], ownerAddress);
+
+        const bal1SP0 = await bold.balanceOf(sp0.target);
+        const bal1SP1 = await bold.balanceOf(sp1.target);
+        const bal1SP2 = await bold.balanceOf(sp2.target);
+
+        const collBalanceAfter = await stETH.balanceOf(sBold.target);
+
+        const deltaSP0 = bal1SP0 - bal0SP0;
+        const deltaSP1 = bal1SP1 - bal0SP1;
+        const deltaSP2 = bal1SP2 - bal0SP2;
+
+        const deltaCollBalance = collBalanceAfter;
+
+        const swapFeeSP0 = (quoteStETH * BigInt(swapFeeBps)) / BigInt(10_000);
+
+        const rewardSP0 = (quoteStETH * BigInt(rewardBps)) / BigInt(10_000);
+
+        const expNetSP0 = ((quoteStETH - swapFeeSP0 - rewardSP0) * BigInt(WEIGHTS[0])) / BigInt(10_000);
+        const expNetSP1 = ((quoteStETH - swapFeeSP0 - rewardSP0) * BigInt(WEIGHTS[1])) / BigInt(10_000);
+        const expNetSP2 = ((quoteStETH - swapFeeSP0 - rewardSP0) * BigInt(WEIGHTS[2])) / BigInt(10_000);
+
+        const expCollBalance = collBalanceBefore + assetsInSPsColl[0] - balanceToSwap;
+
+        expect(deltaSP0).to.eq(expNetSP0);
+        expect(deltaSP1).to.eq(expNetSP1);
+        expect(deltaSP2).to.eq(expNetSP2);
+        expect(deltaCollBalance).to.eq(expCollBalance);
+      });
     });
 
     it('should fail to swap collateral to $sBOLD with invalid data', async function () {
@@ -1683,7 +2321,16 @@ describe('sBold', async function () {
       await sBold.setSwapAdapter(router.target);
 
       // execute swap
-      await expect(sBold.swap(['0x', '0x', '0x'], ownerAddress)).to.be.rejectedWith('ExecutionFailed');
+      await expect(
+        sBold.swap(
+          [
+            { sp: sp0.target, balance: MaxInt256, data: '0x' },
+            { sp: sp1.target, balance: MaxInt256, data: '0x' },
+            { sp: sp2.target, balance: MaxInt256, data: '0x' },
+          ],
+          ownerAddress,
+        ),
+      ).to.be.rejectedWith('ExecutionFailed');
     });
 
     it('should fail to swap collateral to $sBOLD if amountOut < minOut', async function () {
@@ -1742,7 +2389,16 @@ describe('sBold', async function () {
       await router.setReceiver(await bob.getAddress());
 
       // execute swap
-      await expect(sBold.swap(['0x', callData1, '0x'], ownerAddress)).to.be.rejectedWith('InsufficientAmount');
+      await expect(
+        sBold.swap(
+          [
+            { sp: sp0.target, balance: MaxInt256, data: '0x' },
+            { sp: sp1.target, balance: MaxInt256, data: callData1 },
+            { sp: sp2.target, balance: MaxInt256, data: '0x' },
+          ],
+          ownerAddress,
+        ),
+      ).to.be.rejectedWith('InsufficientAmount');
     });
 
     it('should revert to swap if sBOLD is paused', async function () {
@@ -1752,7 +2408,441 @@ describe('sBold', async function () {
       await sBold.pause();
 
       // swap
-      await expect(sBold.swap(['0x', '0x', '0x'], ownerAddress)).to.be.rejectedWith('EnforcedPause');
+      await expect(
+        sBold.swap(
+          [
+            { sp: sp0.target, balance: MaxInt256, data: '0x' },
+            { sp: sp1.target, balance: MaxInt256, data: '0x' },
+            { sp: sp2.target, balance: MaxInt256, data: '0x' },
+          ],
+          ownerAddress,
+        ),
+      ).to.be.rejectedWith('EnforcedPause');
+    });
+
+    it('should revert swap if wrong SP address is passed', async function () {
+      const ownerAddress = await owner.getAddress();
+
+      // swap
+      await expect(
+        sBold.swap(
+          [
+            { sp: owner.getAddress(), balance: MaxInt256, data: '0x' },
+            { sp: sp1.target, balance: MaxInt256, data: '0x' },
+            { sp: sp2.target, balance: MaxInt256, data: '0x' },
+          ],
+          ownerAddress,
+        ),
+      ).to.be.rejectedWith('InvalidDataArray');
+    });
+
+    it('should revert swap if more than available SPs are passed', async function () {
+      const ownerAddress = await owner.getAddress();
+
+      // swap
+      await expect(
+        sBold.swap(
+          [
+            { sp: sp0.target, balance: MaxInt256, data: '0x' },
+            { sp: sp1.target, balance: MaxInt256, data: '0x' },
+            { sp: sp2.target, balance: MaxInt256, data: '0x' },
+            { sp: sp2.target, balance: MaxInt256, data: '0x' },
+          ],
+          ownerAddress,
+        ),
+      ).to.be.rejectedWith('InvalidDataArray');
+    });
+  });
+
+  describe('#rebalanceSPs', function () {
+    it('should rabalance current SPs', async function () {
+      const ownerAddress = await owner.getAddress();
+      const boldPrice = ONE_ETH;
+
+      // setup
+      await bold.mint(ONE_ETH);
+      await bold.approve(sBold.target, ONE_ETH);
+
+      // deposit
+      await sBold.deposit(ONE_ETH, ownerAddress);
+
+      // appreciate
+      const updatedCompBold = ONE_ETH;
+      const accumulatedColl = ethers.parseEther('0.2');
+      const accumulatedCollStashed = ethers.parseEther('0.2');
+      const ethUSDPrice = ethers.parseEther('2000');
+
+      // stub amounts
+      let assetsInSPs = calcAssetsInSPs(updatedCompBold);
+      let assetsInSPsColl = calcAssetsInSPs(accumulatedColl);
+      let assetsInSPsStashedColl = calcAssetsInSPs(accumulatedCollStashed);
+
+      await bold.mintTo(sp0.target, assetsInSPs[0]);
+      await bold.mintTo(sp1.target, assetsInSPs[1]);
+      await bold.mintTo(sp2.target, assetsInSPs[2]);
+
+      // set yield gains
+      await sp0.setCompoundedBoldDeposit(assetsInSPs[0]);
+      await sp1.setCompoundedBoldDeposit(assetsInSPs[1]);
+      await sp2.setCompoundedBoldDeposit(assetsInSPs[2]);
+
+      // set collateral gains
+      await sp0.setDepositorCollGain(assetsInSPsColl[0]);
+      await sp1.setDepositorCollGain(assetsInSPsColl[1]);
+      await sp2.setDepositorCollGain(assetsInSPsColl[2]);
+
+      // set stashed collateral
+      await sp0.setStashedColl(assetsInSPsStashedColl[0]);
+      await sp1.setStashedColl(assetsInSPsStashedColl[1]);
+      await sp2.setStashedColl(assetsInSPsStashedColl[2]);
+
+      // set quotes
+      await priceOracle.setQuote(bold.target, boldPrice);
+
+      const quoteStETH = ((assetsInSPsColl[0] + assetsInSPsStashedColl[0]) * ethUSDPrice) / ONE_ETH;
+      await priceOracle.setQuote(stETH.target, quoteStETH);
+
+      const quoteWstETH = ((assetsInSPsColl[1] + assetsInSPsStashedColl[1]) * ethUSDPrice) / ONE_ETH;
+      await priceOracle.setQuote(wstETH.target, quoteWstETH);
+
+      const quoteRETH = ((assetsInSPsColl[2] + assetsInSPsStashedColl[2]) * ethUSDPrice) / ONE_ETH;
+      await priceOracle.setQuote(rETH.target, quoteRETH);
+
+      // mint $BOLD
+      await bold.mintTo(sp0.target, assetsInSPs[0]);
+      await bold.mintTo(sp1.target, assetsInSPs[1]);
+      await bold.mintTo(sp2.target, assetsInSPs[2]);
+
+      // mint Colls
+      await stETH.mintTo(sp0.target, (assetsInSPsColl[0] + assetsInSPsStashedColl[0]) * BigInt(2));
+      await wstETH.mintTo(sp1.target, (assetsInSPsColl[1] + assetsInSPsStashedColl[1]) * BigInt(2));
+      await rETH.mintTo(sp2.target, (assetsInSPsColl[2] + assetsInSPsStashedColl[2]) * BigInt(2));
+
+      // set Colls to transfer
+      await sp0.setTransferCollAmount(assetsInSPsColl[0] + assetsInSPsStashedColl[0]);
+      await sp1.setTransferCollAmount(assetsInSPsColl[1] + assetsInSPsStashedColl[1]);
+      await sp2.setTransferCollAmount(assetsInSPsColl[2] + assetsInSPsStashedColl[2]);
+
+      // set collateral quotes
+      await router.setQuotes(stETH.target, (quoteStETH * ONE_ETH) / boldPrice);
+      await router.setQuotes(wstETH.target, (quoteWstETH * ONE_ETH) / boldPrice);
+      await router.setQuotes(rETH.target, (quoteRETH * ONE_ETH) / boldPrice);
+
+      await sBold.setSwapAdapter(router.target);
+
+      // build calldata for swap adapter
+      const callData0 = SWAP_INTERFACE.encodeFunctionData('swap', [
+        stETH.target,
+        bold.target,
+        assetsInSPsColl[0] + assetsInSPsStashedColl[0],
+        0,
+        '0x',
+      ]);
+      const callData1 = SWAP_INTERFACE.encodeFunctionData('swap', [
+        wstETH.target,
+        bold.target,
+        assetsInSPsColl[1] + assetsInSPsStashedColl[1],
+        0,
+        '0x',
+      ]);
+      const callData2 = SWAP_INTERFACE.encodeFunctionData('swap', [
+        rETH.target,
+        bold.target,
+        assetsInSPsColl[2] + assetsInSPsStashedColl[2],
+        0,
+        '0x',
+      ]);
+
+      const sp0BalanceBefore = await bold.balanceOf(sp0.target);
+      const sp1BalanceBefore = await bold.balanceOf(sp1.target);
+      const sp2BalanceBefore = await bold.balanceOf(sp2.target);
+
+      await sBold.rebalanceSPs(
+        [
+          {
+            addr: sp0.target,
+            weight: 5000,
+          },
+          {
+            addr: sp1.target,
+            weight: 4000,
+          },
+          {
+            addr: sp2.target,
+            weight: 1000,
+          },
+        ],
+        [
+          { sp: sp0.target, balance: MaxInt256, data: callData0 },
+          { sp: sp1.target, balance: MaxInt256, data: callData1 },
+          { sp: sp2.target, balance: MaxInt256, data: callData2 },
+        ],
+      );
+
+      // BOLD price = 1 USD
+      // total collateral in BOLD = 800 -> 0.4 ETH * 2000 USD
+      // deposited BOLD = 1
+      // sBOLD address BOLD balance = 1 -> dead share
+      const totalCollateralInBold = ((accumulatedColl + accumulatedCollStashed) * ethUSDPrice) / ONE_ETH + ONE_ETH;
+
+      const sp0BalanceAfter = await bold.balanceOf(sp0.target);
+      const sp1BalanceAfter = await bold.balanceOf(sp1.target);
+      const sp2BalanceAfter = await bold.balanceOf(sp2.target);
+
+      const deltaSP0 = sp0BalanceAfter - sp0BalanceBefore;
+      const deltaSP1 = sp1BalanceAfter - sp1BalanceBefore;
+      const deltaSP2 = sp2BalanceAfter - sp2BalanceBefore;
+
+      const expDeltaSP0 = (totalCollateralInBold * BigInt(5000)) / BigInt(BPS_DENOMINATOR) - assetsInSPs[0];
+      const expDeltaSP1 = (totalCollateralInBold * BigInt(4000)) / BigInt(BPS_DENOMINATOR) - assetsInSPs[1];
+      const expDeltaSP2 = (totalCollateralInBold * BigInt(1000)) / BigInt(BPS_DENOMINATOR) - assetsInSPs[2];
+
+      expect((await sBold.sps(0)).sp).to.eq(sp0.target);
+      expect((await sBold.sps(0)).weight).to.eq(5000);
+      expect((await sBold.sps(1)).sp).to.eq(sp1.target);
+      expect((await sBold.sps(1)).weight).to.eq(4000);
+      expect((await sBold.sps(2)).sp).to.eq(sp2.target);
+      expect((await sBold.sps(2)).weight).to.eq(1000);
+
+      expect(deltaSP0).to.be.eq(expDeltaSP0);
+      expect(deltaSP1).to.be.eq(expDeltaSP1);
+      expect(deltaSP2).to.be.eq(expDeltaSP2);
+    });
+
+    it('should rabalance weights current SPs with no collateral for swap', async function () {
+      const ownerAddress = await owner.getAddress();
+
+      // setup
+      await bold.mint(ONE_ETH);
+      await bold.approve(sBold.target, ONE_ETH);
+
+      // deposit
+      await sBold.deposit(ONE_ETH, ownerAddress);
+
+      // appreciate
+      const updatedCompBold = ONE_ETH;
+
+      // stub amounts
+      let assetsInSPs = calcAssetsInSPs(updatedCompBold);
+
+      await bold.mintTo(sp0.target, assetsInSPs[0]);
+      await bold.mintTo(sp1.target, assetsInSPs[1]);
+      await bold.mintTo(sp2.target, assetsInSPs[2]);
+
+      // set yield gains
+      await sp0.setCompoundedBoldDeposit(assetsInSPs[0]);
+      await sp1.setCompoundedBoldDeposit(assetsInSPs[1]);
+      await sp2.setCompoundedBoldDeposit(assetsInSPs[2]);
+
+      // mint $BOLD
+      await bold.mintTo(sp0.target, assetsInSPs[0]);
+      await bold.mintTo(sp1.target, assetsInSPs[1]);
+      await bold.mintTo(sp2.target, assetsInSPs[2]);
+
+      await sBold.setSwapAdapter(router.target);
+
+      // build calldata for swap adapter
+      const callData0 = SWAP_INTERFACE.encodeFunctionData('swap', [stETH.target, bold.target, 0, 0, '0x']);
+      const callData1 = SWAP_INTERFACE.encodeFunctionData('swap', [wstETH.target, bold.target, 0, 0, '0x']);
+      const callData2 = SWAP_INTERFACE.encodeFunctionData('swap', [rETH.target, bold.target, 0, 0, '0x']);
+
+      const sp0BalanceBefore = await bold.balanceOf(sp0.target);
+      const sp1BalanceBefore = await bold.balanceOf(sp1.target);
+      const sp2BalanceBefore = await bold.balanceOf(sp2.target);
+
+      await sBold.rebalanceSPs(
+        [
+          {
+            addr: sp0.target,
+            weight: 5000,
+          },
+          {
+            addr: sp1.target,
+            weight: 4000,
+          },
+          {
+            addr: sp2.target,
+            weight: 1000,
+          },
+        ],
+        [
+          { sp: sp0.target, balance: MaxInt256, data: callData0 },
+          { sp: sp1.target, balance: MaxInt256, data: callData1 },
+          { sp: sp2.target, balance: MaxInt256, data: callData2 },
+        ],
+      );
+
+      const sp0BalanceAfter = await bold.balanceOf(sp0.target);
+      const sp1BalanceAfter = await bold.balanceOf(sp1.target);
+      const sp2BalanceAfter = await bold.balanceOf(sp2.target);
+
+      const deltaSP0 = sp0BalanceAfter - sp0BalanceBefore;
+      const deltaSP1 = sp1BalanceAfter - sp1BalanceBefore;
+      const deltaSP2 = sp2BalanceAfter - sp2BalanceBefore;
+
+      const totalBold = ONE_ETH;
+
+      const expDeltaSP0 = (totalBold * BigInt(5000)) / BigInt(BPS_DENOMINATOR) - assetsInSPs[0];
+      const expDeltaSP1 = (totalBold * BigInt(4000)) / BigInt(BPS_DENOMINATOR) - assetsInSPs[1];
+      const expDeltaSP2 = (totalBold * BigInt(1000)) / BigInt(BPS_DENOMINATOR) - assetsInSPs[2];
+
+      expect((await sBold.sps(0)).sp).to.eq(sp0.target);
+      expect((await sBold.sps(0)).weight).to.eq(5000);
+      expect((await sBold.sps(1)).sp).to.eq(sp1.target);
+      expect((await sBold.sps(1)).weight).to.eq(4000);
+      expect((await sBold.sps(2)).sp).to.eq(sp2.target);
+      expect((await sBold.sps(2)).weight).to.eq(1000);
+
+      expect(deltaSP0).to.be.eq(expDeltaSP0);
+      expect(deltaSP1).to.be.eq(expDeltaSP1);
+      expect(deltaSP2).to.be.eq(expDeltaSP2);
+    });
+
+    it('should fail if caller is not the owner', async function () {
+      const callData0 = SWAP_INTERFACE.encodeFunctionData('swap', [stETH.target, bold.target, 0, 0, '0x']);
+      const callData1 = SWAP_INTERFACE.encodeFunctionData('swap', [wstETH.target, bold.target, 0, 0, '0x']);
+      const callData2 = SWAP_INTERFACE.encodeFunctionData('swap', [rETH.target, bold.target, 0, 0, '0x']);
+
+      await expect(
+        sBold.connect(bob).rebalanceSPs(
+          [
+            {
+              addr: sp0.target,
+              weight: 5000,
+            },
+            {
+              addr: sp1.target,
+              weight: 4000,
+            },
+            {
+              addr: sp2.target,
+              weight: 1000,
+            },
+          ],
+          [
+            { sp: sp0.target, balance: MaxInt256, data: callData0 },
+            { sp: sp1.target, balance: MaxInt256, data: callData1 },
+            { sp: sp2.target, balance: MaxInt256, data: callData2 },
+          ],
+        ),
+      ).to.be.rejectedWith('OwnableUnauthorizedAccount');
+    });
+
+    it('should fail if collateral is over the limit', async function () {
+      const ownerAddress = await owner.getAddress();
+      const boldPrice = ONE_ETH;
+
+      // setup
+      await bold.mint(ONE_ETH);
+      await bold.approve(sBold.target, ONE_ETH);
+
+      // deposit
+      await sBold.deposit(ONE_ETH, ownerAddress);
+
+      // appreciate
+      const updatedCompBold = ONE_ETH;
+      const accumulatedColl = ethers.parseEther('0.2');
+      const accumulatedCollStashed = ethers.parseEther('0.2');
+      const ethUSDPrice = ethers.parseEther('2000');
+
+      // stub amounts
+      let assetsInSPs = calcAssetsInSPs(updatedCompBold);
+      let assetsInSPsColl = calcAssetsInSPs(accumulatedColl);
+      let assetsInSPsStashedColl = calcAssetsInSPs(accumulatedCollStashed);
+
+      await bold.mintTo(sp0.target, assetsInSPs[0]);
+      await bold.mintTo(sp1.target, assetsInSPs[1]);
+      await bold.mintTo(sp2.target, assetsInSPs[2]);
+
+      // set yield gains
+      await sp0.setCompoundedBoldDeposit(assetsInSPs[0]);
+      await sp1.setCompoundedBoldDeposit(assetsInSPs[1]);
+      await sp2.setCompoundedBoldDeposit(assetsInSPs[2]);
+
+      // set collateral gains
+      await sp0.setDepositorCollGain(assetsInSPsColl[0]);
+      await sp1.setDepositorCollGain(assetsInSPsColl[1]);
+      await sp2.setDepositorCollGain(assetsInSPsColl[2]);
+
+      // set stashed collateral
+      await sp0.setStashedColl(assetsInSPsStashedColl[0]);
+      await sp1.setStashedColl(assetsInSPsStashedColl[1]);
+      await sp2.setStashedColl(assetsInSPsStashedColl[2]);
+
+      // set quotes
+      await priceOracle.setQuote(bold.target, boldPrice);
+
+      const quoteStETH = ((assetsInSPsColl[0] + assetsInSPsStashedColl[0]) * ethUSDPrice) / ONE_ETH;
+      await priceOracle.setQuote(stETH.target, quoteStETH);
+
+      const quoteWstETH = ((assetsInSPsColl[1] + assetsInSPsStashedColl[1]) * ethUSDPrice) / ONE_ETH;
+      await priceOracle.setQuote(wstETH.target, quoteWstETH);
+
+      const quoteRETH = ((assetsInSPsColl[2] + assetsInSPsStashedColl[2]) * ethUSDPrice) / ONE_ETH;
+      await priceOracle.setQuote(rETH.target, quoteRETH);
+
+      // mint $BOLD
+      await bold.mintTo(sp0.target, assetsInSPs[0]);
+      await bold.mintTo(sp1.target, assetsInSPs[1]);
+      await bold.mintTo(sp2.target, assetsInSPs[2]);
+
+      // mint Colls
+      await stETH.mintTo(sp0.target, (assetsInSPsColl[0] + assetsInSPsStashedColl[0]) * BigInt(2));
+      await wstETH.mintTo(sp1.target, (assetsInSPsColl[1] + assetsInSPsStashedColl[1]) * BigInt(2));
+      await rETH.mintTo(sp2.target, (assetsInSPsColl[2] + assetsInSPsStashedColl[2]) * BigInt(2));
+
+      // set Colls to transfer
+      await sp0.setTransferCollAmount(assetsInSPsColl[0] + assetsInSPsStashedColl[0]);
+      await sp1.setTransferCollAmount(assetsInSPsColl[1] + assetsInSPsStashedColl[1]);
+      await sp2.setTransferCollAmount(assetsInSPsColl[2] + assetsInSPsStashedColl[2]);
+
+      // set collateral quotes
+      await router.setQuotes(stETH.target, (quoteStETH * ONE_ETH) / boldPrice);
+      await router.setQuotes(wstETH.target, (quoteWstETH * ONE_ETH) / boldPrice);
+      await router.setQuotes(rETH.target, (quoteRETH * ONE_ETH) / boldPrice);
+
+      await sBold.setSwapAdapter(router.target);
+
+      // build calldata for swap adapter
+      const callData0 = SWAP_INTERFACE.encodeFunctionData('swap', [stETH.target, bold.target, 0, 0, '0x']);
+      const callData1 = SWAP_INTERFACE.encodeFunctionData('swap', [
+        wstETH.target,
+        bold.target,
+        assetsInSPsColl[1] + assetsInSPsStashedColl[1],
+        0,
+        '0x',
+      ]);
+      const callData2 = SWAP_INTERFACE.encodeFunctionData('swap', [
+        rETH.target,
+        bold.target,
+        assetsInSPsColl[2] + assetsInSPsStashedColl[2],
+        0,
+        '0x',
+      ]);
+
+      await expect(
+        sBold.rebalanceSPs(
+          [
+            {
+              addr: sp0.target,
+              weight: 5000,
+            },
+            {
+              addr: sp1.target,
+              weight: 4000,
+            },
+            {
+              addr: sp2.target,
+              weight: 1000,
+            },
+          ],
+          [
+            { sp: sp0.target, balance: MaxInt256, data: callData0 },
+            { sp: sp1.target, balance: MaxInt256, data: callData1 },
+            { sp: sp2.target, balance: MaxInt256, data: callData2 },
+          ],
+        ),
+      ).to.be.rejectedWith('CollOverLimit');
     });
   });
 });

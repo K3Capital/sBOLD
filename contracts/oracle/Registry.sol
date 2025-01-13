@@ -3,9 +3,7 @@ pragma solidity ^0.8.0;
 
 import {IRegistry} from "../interfaces/IRegistry.sol";
 import {IPriceOracle} from "../interfaces/IPriceOracle.sol";
-import {AggregatorV3Interface} from "../external/AggregatorV3Interface.sol";
 import {Ownable} from "@openzeppelin/contracts/access/Ownable.sol";
-import {Decimals} from "../libraries/helpers/Decimals.sol";
 import {Common} from "../libraries/Common.sol";
 
 /// @title Registry
@@ -19,7 +17,7 @@ contract Registry is IRegistry, IPriceOracle, Ownable {
     constructor() Ownable(_msgSender()) {}
 
     /// @inheritdoc IRegistry
-    function setOracles(Oracle[] memory oracles) external onlyOwner {
+    function setOracles(Oracle[] calldata oracles) external onlyOwner {
         for (uint256 i = 0; i < oracles.length; i++) {
             Common.revertZeroAddress(oracles[i].base);
             // Map new oracle address to `base`

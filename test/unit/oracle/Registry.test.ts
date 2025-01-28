@@ -103,4 +103,11 @@ describe('Registry', async function () {
       await expect(chainlinkOracle.getQuote(amount, unsupportedBase)).to.be.rejectedWith('InvalidFeed');
     });
   });
+
+  describe('#isBaseSupported', function () {
+    it('should check base address to oracle address', async function () {
+      expect(await chainlinkOracle.isBaseSupported(base)).to.equal(true);
+      expect(await chainlinkOracle.isBaseSupported(unsupportedBase)).to.equal(false);
+    });
+  });
 });

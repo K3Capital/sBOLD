@@ -90,13 +90,13 @@ contract PythOracle is IPriceOracle, Ownable {
         uint256 scale;
         if (priceStruct.expo < 0) {
             // scale down if exponent < 0
-            scale = (price * 10 ** baseDecimals) / (10 ** uint8(int8(-priceStruct.expo)));
+            scale = (price * 10 ** Constants.ORACLE_PRICE_PRECISION) / (10 ** uint8(int8(-priceStruct.expo)));
         } else {
             // scale up if exponent >= 0
-            scale = (price * 10 ** baseDecimals) * (10 ** uint8(int8(priceStruct.expo)));
+            scale = (price * 10 ** Constants.ORACLE_PRICE_PRECISION) * (10 ** uint8(int8(priceStruct.expo)));
         }
-        // Calculate amount out scaled to quote asset decimals
-        return (scale * inAmount) / 10 ** Constants.ORACLE_PRICE_PRECISION;
+        // Calculate amount out scaled to `ORACLE_PRICE_PRECISION`
+        return (scale * inAmount) / 10 ** baseDecimals;
     }
 
     /// @inheritdoc IPriceOracle

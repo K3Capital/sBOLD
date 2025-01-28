@@ -50,6 +50,6 @@ library TransientStorage {
     /// @dev Loads the collateral in USD value from transient storage.
     /// @return The value.
     function loadCollValue() internal view returns (uint256) {
-        return COLLATERAL_IN_BOLD_STORAGE.asUint256().tload();
+        return COLLATERAL_VALUE_STORAGE.asUint256().tload();
     }
 }

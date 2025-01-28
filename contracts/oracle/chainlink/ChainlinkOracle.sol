@@ -37,9 +37,9 @@ contract ChainlinkOracle is BaseChainlinkOracle {
     function getQuote(uint256 inAmount, address _base) external view override returns (uint256) {
         if (!isBaseSupported(_base)) revert InvalidFeed();
 
-        uint256 lstUsdPrice = _getLatestAnswer(feed);
+        uint256 baseToUsdPrice = _getLatestAnswer(feed);
 
-        return (inAmount * lstUsdPrice) / 10 ** Constants.ORACLE_PRICE_PRECISION;
+        return (inAmount * baseToUsdPrice) / 10 ** Constants.ORACLE_PRICE_PRECISION;
     }
 
     /// @inheritdoc BaseChainlinkOracle

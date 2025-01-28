@@ -4,6 +4,7 @@ pragma solidity ^0.8.0;
 import {ERC4626} from "@openzeppelin/contracts/token/ERC20/extensions/ERC4626.sol";
 import {Ownable} from "@openzeppelin/contracts/access/Ownable.sol";
 import {Pausable} from "@openzeppelin/contracts/utils/Pausable.sol";
+import {ReentrancyGuardTransient} from "@openzeppelin/contracts/utils/ReentrancyGuardTransient.sol";
 import {IStabilityPool} from "../external/IStabilityPool.sol";
 import {IPriceOracle} from "../interfaces/IPriceOracle.sol";
 import {ISBold} from "../interfaces/ISBold.sol";
@@ -14,7 +15,7 @@ import {TransientStorage} from "../libraries/helpers/TransientStorage.sol";
 
 /// @title sBold Protocol
 /// @notice The $sBOLD represents an ERC4626 yield-bearing token.
-abstract contract BaseSBold is ISBold, ICommon, ERC4626, Pausable, Ownable {
+abstract contract BaseSBold is ISBold, ICommon, ERC4626, ReentrancyGuardTransient, Pausable, Ownable {
     /// @notice Data for stability pools.
     SP[] public sps;
     /// @notice The fee in basis points.
@@ -54,6 +55,14 @@ abstract contract BaseSBold is ISBold, ICommon, ERC4626, Pausable, Ownable {
         _checkAndStoreCollValueInBold();
         _;
         TransientStorage.switchOffCollInBoldFlag();
+    }
+
+    /// @dev Check for reentrancy on read functions.
+    modifier nonReentrantReadOnly() {
+        if (_reentrancyGuardEntered()) {
+            revert ReentrancyGuardReentrantCall();
+        }
+        _;
     }
 
     /*//////////////////////////////////////////////////////////////
@@ -120,7 +129,7 @@ abstract contract BaseSBold is ISBold, ICommon, ERC4626, Pausable, Ownable {
         Common.revertZeroAddress(_swapAdapter);
         if (_swapAdapter == asset()) revert InvalidAddress();
         for (uint256 i = 0; i < sps.length; i++) {
-            if (_swapAdapter == sps[i].sp) revert InvalidAddress();
+            if (_swapAdapter == sps[i].sp || _swapAdapter == sps[i].coll) revert InvalidAddress();
         }
 
         swapAdapter = _swapAdapter;

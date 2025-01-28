@@ -20,8 +20,10 @@ library SpLogic {
             ISBold.SP memory sp = sps[i];
             // Calculate amount for SP, based on the specified weight
             uint256 amount = assets.mulDiv(sp.weight, Constants.BPS_DENOMINATOR);
-            // Provide amount to SP (accumulated gains are not transferred).
-            IStabilityPool(sp.sp).provideToSP(amount, false);
+            if (amount > 0) {
+                // Provide amount to SP (accumulated gains are not transferred).
+                IStabilityPool(sp.sp).provideToSP(amount, false);
+            }
         }
     }
 
@@ -39,7 +41,7 @@ library SpLogic {
         bool shouldProvide
     ) internal {
         // Get the portion of all shares
-        uint256 portion = shares.mulDiv(10 ** decimals, totalSupply);
+        uint256 portion = shares.mulDiv(10 ** decimals, totalSupply, Math.Rounding.Ceil);
         uint256 accumulatedYield;
 
         for (uint256 i = 0; i < sps.length; i++) {
@@ -49,11 +51,10 @@ library SpLogic {
             uint256 compoundedBold = sp.getCompoundedBoldDeposit(address(this));
             // Calculate the pro-rata amount
             uint256 amountProRataOnCompounded = compoundedBold.mulDiv(portion, 10 ** decimals, Math.Rounding.Ceil);
-
-            if (amountProRataOnCompounded == 0) continue;
-
             // Pending yield gains from deposits
             uint256 pendingYield = sp.getDepositorYieldGainWithPending(address(this));
+
+            if (amountProRataOnCompounded == 0 && pendingYield == 0) continue;
 
             // Withdraw amount from SP (accumulated gains are transferred).
             sp.withdrawFromSP(amountProRataOnCompounded, true);

@@ -26,10 +26,4 @@ library Decimals {
 
         return (false, 0);
     }
-
-    /// @dev Scales value to asset's decimals.
-    function scale(uint256 value, uint256 decimals) internal pure returns (uint256) {
-        if (decimals < 18) return value / 10 ** (18 - decimals);
-        return value;
-    }
 }

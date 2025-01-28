@@ -4,6 +4,7 @@ pragma solidity ^0.8.0;
 import {IPriceOracle} from "../../interfaces/IPriceOracle.sol";
 import {AggregatorV3Interface} from "../../external/AggregatorV3Interface.sol";
 import {Common} from "../../libraries/Common.sol";
+import {Constants} from "../../libraries/helpers/Constants.sol";
 
 /// @title BaseChainlinkOracle
 /// @notice Base adaptation for Chainlink price oracle.
@@ -45,6 +46,6 @@ contract BaseChainlinkOracle is IPriceOracle {
 
     /// @notice Returns scaled price with precision of 18.
     function _scale(int256 _price, uint256 _decimals) private pure returns (uint256) {
-        return uint256(_price) * 10 ** (18 - _decimals);
+        return uint256(_price) * 10 ** (Constants.ORACLE_PRICE_PRECISION - _decimals);
     }
 }

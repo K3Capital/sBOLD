@@ -15,6 +15,7 @@ const amount = ethers.parseEther(value.toString());
 describe('ChainlinkLstOracle', async function () {
   let owner: Signer;
   let random: Signer;
+  let asset: Contract;
 
   let aggregatorEthUsdFeed: Contract;
   let aggregatorLstEthFeed: Contract;
@@ -26,10 +27,11 @@ describe('ChainlinkLstOracle', async function () {
 
     aggregatorEthUsdFeed = await ethers.deployContract('MockChainlinkFeed');
     aggregatorLstEthFeed = await ethers.deployContract('MockChainlinkFeed');
+    asset = await ethers.deployContract('MockERC20');
 
     chainlinkOracle = (
       await ethers.deployContract('ChainlinkLstOracle', [
-        base,
+        asset,
         { addr: aggregatorEthUsdFeed, maxStaleness: MAX_STALENESS },
         { addr: aggregatorLstEthFeed, maxStaleness: MAX_STALENESS },
       ])
@@ -157,7 +159,7 @@ describe('ChainlinkLstOracle', async function () {
       const expAmount = (amount * ethers.parseEther('1')) / ONE_ETH;
 
       // the returned quote should be scaled to 18 decimals precision
-      expect(await chainlinkOracle.getQuote(amount, base)).to.eq(expAmount);
+      expect(await chainlinkOracle.getQuote(amount, asset)).to.eq(expAmount);
     });
 
     it('should fail to get quote if EthUsd price is stale', async function () {
@@ -178,7 +180,7 @@ describe('ChainlinkLstOracle', async function () {
 
       await aggregatorEthUsdFeed.setDecimals(8);
 
-      await expect(chainlinkOracle.getQuote(amount, base)).to.be.rejectedWith('TooStalePrice');
+      await expect(chainlinkOracle.getQuote(amount, asset)).to.be.rejectedWith('TooStalePrice');
     });
 
     it('should fail to get quote if LstEth price is stale', async function () {
@@ -199,7 +201,7 @@ describe('ChainlinkLstOracle', async function () {
 
       await aggregatorEthUsdFeed.setDecimals(8);
 
-      await expect(chainlinkOracle.getQuote(amount, base)).to.be.rejectedWith('TooStalePrice');
+      await expect(chainlinkOracle.getQuote(amount, asset)).to.be.rejectedWith('TooStalePrice');
     });
 
     it('should fail to get quote if EthUsd price is negative', async function () {
@@ -220,7 +222,7 @@ describe('ChainlinkLstOracle', async function () {
 
       await aggregatorEthUsdFeed.setDecimals(8);
 
-      await expect(chainlinkOracle.getQuote(amount, base)).to.be.rejectedWith('InvalidPrice');
+      await expect(chainlinkOracle.getQuote(amount, asset)).to.be.rejectedWith('InvalidPrice');
     });
 
     it('should fail to get quote if LstEth price is negative', async function () {
@@ -241,7 +243,7 @@ describe('ChainlinkLstOracle', async function () {
 
       await aggregatorEthUsdFeed.setDecimals(8);
 
-      await expect(chainlinkOracle.getQuote(amount, base)).to.be.rejectedWith('InvalidPrice');
+      await expect(chainlinkOracle.getQuote(amount, asset)).to.be.rejectedWith('InvalidPrice');
     });
 
     it('should fail to get quote if EthUsd price is 0', async function () {
@@ -262,7 +264,7 @@ describe('ChainlinkLstOracle', async function () {
 
       await aggregatorEthUsdFeed.setDecimals(8);
 
-      await expect(chainlinkOracle.getQuote(amount, base)).to.be.rejectedWith('InvalidPrice');
+      await expect(chainlinkOracle.getQuote(amount, asset)).to.be.rejectedWith('InvalidPrice');
     });
 
     it('should fail to get quote if LstEth price is 0', async function () {
@@ -283,7 +285,7 @@ describe('ChainlinkLstOracle', async function () {
 
       await aggregatorEthUsdFeed.setDecimals(8);
 
-      await expect(chainlinkOracle.getQuote(amount, base)).to.be.rejectedWith('InvalidPrice');
+      await expect(chainlinkOracle.getQuote(amount, asset)).to.be.rejectedWith('InvalidPrice');
     });
   });
 });

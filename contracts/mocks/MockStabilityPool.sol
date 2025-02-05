@@ -33,14 +33,21 @@ contract MockStabilityPool {
 
     function provideToSP(uint256 _amount, bool) external {
         require(!doRevert, "MockSP: call failed");
+        compoundedBoldGain += _amount;
         IBoldToken(bold).sendToPool(msg.sender, address(this), _amount);
     }
 
     function withdrawFromSP(uint256 _amount, bool doClaim) external {
         require(!doRevert, "MockSP: call failed");
 
+        if (_amount == compoundedBoldGain) {
+            _amount = compoundedBoldGain;
+            compoundedBoldGain = 0;
+        }
+
         if (doClaim) {
             _amount += pendingBoldGain;
+            pendingBoldGain = 0;
             collGain = 0;
             stashedCollAmount = 0;
         }

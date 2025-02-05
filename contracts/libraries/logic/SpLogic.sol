@@ -29,45 +29,37 @@ library SpLogic {
 
     /// @notice Withdraws $BOLD from SPs.
     /// @param sps The SPs to withdraw $BOLD from.
-    /// @param shares The $sBOLD shares.
-    /// @param totalSupply The total supply of $sBOLD.
-    /// @param decimals The $sBOLD decimals.
+    /// @param bold The $BOLD instance.
+    /// @param decimals The $BOLD decimals.
+    /// @param assets The $BOLD assets.
     /// @param shouldProvide Should the withdraw provide leftover assets to current pools
     function withdrawFromSP(
         ISBold.SP[] memory sps,
-        uint256 shares,
-        uint256 totalSupply,
-        uint256 decimals,
+        IERC20 bold,
+        uint8 decimals,
+        uint256 assets,
         bool shouldProvide
     ) internal {
-        // Get the portion of all shares
-        uint256 portion = shares.mulDiv(10 ** decimals, totalSupply, Math.Rounding.Ceil);
-        uint256 accumulatedYield;
-
         for (uint256 i = 0; i < sps.length; i++) {
-            // Get $BOLD compounded deposits from each SP
             IStabilityPool sp = IStabilityPool(sps[i].sp);
-            // Accounted yield gains from deposits
-            uint256 compoundedBold = sp.getCompoundedBoldDeposit(address(this));
-            // Calculate the pro-rata amount
-            uint256 amountProRataOnCompounded = compoundedBold.mulDiv(portion, 10 ** decimals, Math.Rounding.Ceil);
-            // Pending yield gains from deposits
-            uint256 pendingYield = sp.getDepositorYieldGainWithPending(address(this));
+            // Get compounded $BOLD amount from SP
+            uint256 amountCompoundedFromSp = sp.getCompoundedBoldDeposit(address(this));
+            // Get pending yield gain in $BOLD amount from SP
+            uint256 amountPendingFromSp = sp.getDepositorYieldGainWithPending(address(this));
 
-            if (amountProRataOnCompounded == 0 && pendingYield == 0) continue;
-
+            if (amountCompoundedFromSp == 0 && amountPendingFromSp == 0) continue;
             // Withdraw amount from SP (accumulated gains are transferred).
-            sp.withdrawFromSP(amountProRataOnCompounded, true);
-
-            // Calculate the pro-rata amount on the collected yield.
-            uint256 amountProRataOnYield = pendingYield.mulDiv(portion, 10 ** decimals, Math.Rounding.Ceil);
-
-            // Add to the accumulated asset amount by subtracting the pro-rata of the yield.
-            accumulatedYield += pendingYield - amountProRataOnYield;
+            sp.withdrawFromSP(amountCompoundedFromSp, true);
         }
 
-        // Provide the accumulated asset amount back to SPs.
-        if (shouldProvide) provideToSP(sps, accumulatedYield);
+        uint256 balanceAfter = bold.balanceOf(address(this));
+        uint256 balanceToProvide = balanceAfter - assets;
+        uint256 deadShare = 10 ** decimals;
+
+        if (balanceToProvide > deadShare) {
+            // Provide the accumulated asset amount back to SPs.
+            if (shouldProvide) provideToSP(sps, balanceToProvide - deadShare);
+        }
     }
 
     /// @notice Aggregates $BOLD assets from each pool and returns the total holdings.
@@ -101,7 +93,7 @@ library SpLogic {
     /// @notice Returns $BOLD assets from SP.
     /// @param _sp The SP address.
     /// @return The aggregated compounded $BOLD deposit from SP.
-    function _getBoldAssetsSP(address _sp) private view returns (uint256) {
+    function _getBoldAssetsSP(address _sp) internal view returns (uint256) {
         IStabilityPool sp = IStabilityPool(_sp);
         // Accounted yield gains from deposits
         uint256 compoundedBold = sp.getCompoundedBoldDeposit(address(this));

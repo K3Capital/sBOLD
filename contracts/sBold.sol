@@ -109,7 +109,7 @@ contract sBold is BaseSBold {
 
         uint256 assets = super.previewRedeem(shares);
 
-        SpLogic.withdrawFromSP(sps, shares, totalSupply(), decimals(), true);
+        SpLogic.withdrawFromSP(sps, IERC20(asset()), decimals(), assets, true);
 
         _withdraw(_msgSender(), receiver, owner, assets, shares);
 
@@ -133,7 +133,7 @@ contract sBold is BaseSBold {
 
         uint256 shares = super.previewWithdraw(assets);
 
-        SpLogic.withdrawFromSP(sps, shares, totalSupply(), decimals(), true);
+        SpLogic.withdrawFromSP(sps, IERC20(asset()), decimals(), assets, true);
 
         _withdraw(_msgSender(), receiver, owner, assets, shares);
 
@@ -179,9 +179,14 @@ contract sBold is BaseSBold {
 
         _checkCollHealth(true);
 
-        uint256 _totalSupply = totalSupply();
+        uint256 boldAmount;
+        for (uint256 i = 0; i < sps.length; i++) {
+            // Add $BOLD compounded deposits from each SP
+            boldAmount += SpLogic._getBoldAssetsSP(sps[i].sp);
+        }
+
         // Withdraw all assets from current SPs.
-        SpLogic.withdrawFromSP(sps, _totalSupply, _totalSupply, decimals(), false);
+        SpLogic.withdrawFromSP(sps, IERC20(bold), decimals(), boldAmount, false);
 
         // Sanitize
         delete sps;
@@ -324,7 +329,15 @@ contract sBold is BaseSBold {
 
         uint256 boldAmount = SpLogic.getBoldAssets(sps, IERC20(asset()));
 
-        return maxWithdrawAssets > boldAmount ? boldAmount : maxWithdrawAssets;
+        if (maxWithdrawAssets > boldAmount) {
+            uint256 deadShareAmount = 10 ** decimals();
+
+            if (boldAmount < deadShareAmount) return 0;
+
+            return boldAmount - deadShareAmount;
+        }
+
+        return maxWithdrawAssets;
     }
 
     /// @dev Max redeem returns 0 if collateral is above max. See {IERC4626-maxRedeem}.
@@ -338,8 +351,12 @@ contract sBold is BaseSBold {
 
         uint256 boldAmount = SpLogic.getBoldAssets(sps, IERC20(asset()));
 
-        if (boldAmount < maxWithdrawAssets) {
-            return _convertToShares(boldAmount, Math.Rounding.Floor);
+        if (maxWithdrawAssets > boldAmount) {
+            uint256 deadShareAmount = 10 ** decimals();
+
+            if (boldAmount < deadShareAmount) return 0;
+
+            return _convertToShares(boldAmount - deadShareAmount, Math.Rounding.Floor);
         }
 
         return super.maxRedeem(owner);

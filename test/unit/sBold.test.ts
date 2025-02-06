@@ -589,15 +589,16 @@ describe('sBold', async function () {
 
       // 1st deposit
       await sBold.deposit(ONE_ETH, ownerAddress);
-
-      // 1 $BOLD deposited $BOLD
-      await sp0.setCompoundedBoldDeposit(ONE_ETH);
-
       // 2nd deposit
       await sBold.deposit(amount - ONE_ETH, ownerAddress);
 
-      // 1100400 $BOLD = 1100400 USD => 1100400 ** 1e18
-      await sp0.setCompoundedBoldDeposit(amount + yieldGain);
+      let compBoldInSps = calcAssetsInSPs(amount + yieldGain);
+
+      // set compounded yield - 1100400 $BOLD = 1100400 USD
+      await sp0.setCompoundedBoldDeposit(compBoldInSps[0]);
+      await sp1.setCompoundedBoldDeposit(compBoldInSps[1]);
+      await sp2.setCompoundedBoldDeposit(compBoldInSps[2]);
+
       // $BOLD = 1 USD
       await priceOracle.setQuote(bold.target, ONE_ETH);
 
@@ -608,7 +609,7 @@ describe('sBold', async function () {
 
       // sBOLD rate = sBOLD total supply / deposited $BOLD + yield from $BOLD + USD value from accumulated collateral
       // => (1000001 + 100400 + 2245) / 1000001
-      // => 1.102645000000000000 $sBOLD = 1 $BOLD
+      // => 1.102645000000000000 $BOLD = 1 $sBOLD
       const expectedRate = ((amount + yieldGain + quote + ONE_ETH) * ONE_ETH) / (amount + ONE_ETH);
 
       const rate = await sBold.getSBoldRate();
@@ -644,7 +645,12 @@ describe('sBold', async function () {
         await sBold.deposit(ONE_ETH, ownerAddress);
 
         // 1 $BOLD = 1 USD => 1 ** 1e18
-        await sp0.setCompoundedBoldDeposit(amount + yieldGain);
+        let compBoldInSps = calcAssetsInSPs(amount + yieldGain);
+
+        await sp0.setCompoundedBoldDeposit(compBoldInSps[0]);
+        await sp1.setCompoundedBoldDeposit(compBoldInSps[1]);
+        await sp2.setCompoundedBoldDeposit(compBoldInSps[2]);
+
         // $BOLD = 1 USD
         await priceOracle.setQuote(bold.target, ONE_ETH);
 
@@ -818,8 +824,8 @@ describe('sBold', async function () {
       await priceOracle.setQuote(stETH.target, quote);
 
       const maxWithdraw = await sBold.maxWithdraw(ownerAddress);
-      // maxWithdraw should be equal to yield gains + dead share
-      expect(maxWithdraw).to.be.eq(compBold + pendingGains + ONE_ETH);
+      // maxWithdraw should be equal to yield gains
+      expect(maxWithdraw).to.be.eq(compBold + pendingGains);
     });
 
     it('should maxWithdraw return 0 when collateral is over the max limit', async function () {
@@ -923,7 +929,7 @@ describe('sBold', async function () {
 
         const maxRedeem = await sBold.maxRedeem(ownerAddress);
         // total balance $BOLD = 2.1
-        const balanceBold = compBold + pendingGains + ONE_ETH;
+        const balanceBold = compBold + pendingGains;
 
         const sharesFromTotalBold = await sBold.convertToShares(balanceBold);
 
@@ -1047,6 +1053,17 @@ describe('sBold', async function () {
 
       expect(assets).to.approximately(expAssets, BigInt(1));
     });
+
+    it('should perform convertToShares with correct rounding', async function () {
+      await bold.mintTo(sBold.target, ethers.parseEther('0.13000000000000037'));
+
+      const assets = await sBold.convertToAssets(ONE_ETH);
+
+      // performs fee on total
+      const expAssets = '1130000000000000369';
+
+      expect(assets).to.eq(expAssets);
+    });
   });
 
   describe('#convertToShares', function () {
@@ -1057,6 +1074,16 @@ describe('sBold', async function () {
       const expShares = ONE_ETH;
 
       expect(shares).to.approximately(expShares, BigInt(1));
+    });
+
+    it('should perform convertToShares with correct rounding', async function () {
+      await bold.mintTo(sBold.target, ethers.parseEther('0.13000000000000037'));
+
+      const shares = await sBold.convertToShares(ONE_ETH);
+
+      const expShares = '884955752212389090';
+
+      expect(shares).to.equal(expShares);
     });
   });
 
@@ -1103,7 +1130,6 @@ describe('sBold', async function () {
 
         // update
         // one $BOLD * (1 - fee)
-        await sp0.setCompoundedBoldDeposit(expPreview);
         await priceOracle.setQuote(bold.target, ONE_ETH);
 
         // deposit
@@ -1125,17 +1151,27 @@ describe('sBold', async function () {
       await bold.approve(sBold.target, ONE_ETH);
 
       // 1st deposit
-      await sBold.deposit(ONE_ETH, await owner.getAddress());
+      const firstDepositorAmount = ONE_ETH;
+      await sBold.deposit(firstDepositorAmount, await owner.getAddress());
 
+      // Add yield gain of 0.1 $BOLD - 10% to eachSP + mint same bold amount
       const yieldGain0 = ethers.parseEther('0.1');
-      const updatedCompBold0 = ONE_ETH + yieldGain0;
-      await sp0.setCompoundedBoldDeposit(updatedCompBold0);
+      let assetsInSPs = calcAssetsInSPs(yieldGain0);
+
+      await sp0.setDepositorYieldGainWithPending(assetsInSPs[0]);
+      await sp1.setDepositorYieldGainWithPending(assetsInSPs[1]);
+      await sp2.setDepositorYieldGainWithPending(assetsInSPs[2]);
+
+      await bold.mintTo(sp0.target, assetsInSPs[0]);
+      await bold.mintTo(sp1.target, assetsInSPs[1]);
+      await bold.mintTo(sp2.target, assetsInSPs[2]);
+
       await priceOracle.setQuote(bold.target, ONE_ETH);
 
       const rate0 = await sBold.getSBoldRate();
       const totalSupply0 = await sBold.totalSupply();
       // rate = 1.1 value / 1 $sBOLD total supply
-      const expectedRate0 = ((updatedCompBold0 + initialDeposit) * ONE_ETH) / totalSupply0;
+      const expectedRate0 = ((firstDepositorAmount + yieldGain0 + initialDeposit) * ONE_ETH) / totalSupply0;
 
       expect(rate0).to.approximately(expectedRate0, 1);
 
@@ -1156,8 +1192,21 @@ describe('sBold', async function () {
       expect(sBoldBalanceBob0).to.approximately(expectedsBoldBalanceBob0, 2);
 
       const yieldGain1 = ethers.parseEther('0.1');
-      const updatedCompBold1 = updatedCompBold0 + secondDepositorAmount + yieldGain1;
-      await sp0.setCompoundedBoldDeposit(updatedCompBold1);
+      assetsInSPs = calcAssetsInSPs(yieldGain1);
+
+      await bold.mintTo(sp0.target, assetsInSPs[0]);
+      await bold.mintTo(sp1.target, assetsInSPs[1]);
+      await bold.mintTo(sp2.target, assetsInSPs[2]);
+
+      const yieldGainAll = ethers.parseEther('0.2');
+      assetsInSPs = calcAssetsInSPs(yieldGainAll);
+
+      await sp0.setDepositorYieldGainWithPending(assetsInSPs[0]);
+      await sp1.setDepositorYieldGainWithPending(assetsInSPs[1]);
+      await sp2.setDepositorYieldGainWithPending(assetsInSPs[2]);
+
+      const updatedCompBold1 = firstDepositorAmount + secondDepositorAmount + yieldGain0 + yieldGain1;
+
       await priceOracle.setQuote(bold.target, ONE_ETH);
 
       const rate1 = await sBold.getSBoldRate();
@@ -1292,7 +1341,6 @@ describe('sBold', async function () {
         expect(ownerBalanceBefore).to.eq(ownerBalanceAfter + ONE_ETH + fee / BigInt(2));
 
         // update
-        await sp0.setCompoundedBoldDeposit(ONE_ETH);
         await priceOracle.setQuote(bold.target, ONE_ETH);
 
         vaultBalanceBefore = await bold.balanceOf(vault.getAddress());
@@ -1314,37 +1362,47 @@ describe('sBold', async function () {
     it('should create consecutive $sBOLD mints', async function () {
       const bobAddress = await bob.getAddress();
 
-      // setup
+      // Mint one bold to owner and approve protocol.
       await bold.mint(ONE_ETH);
       await bold.approve(sBold.target, ONE_ETH);
 
-      // 1st deposit - 1 $sBOLD in $BOLD value
+      // 1st deposit - 1 $sBOLD in $BOLD value from owner.
       await sBold.mint(ONE_ETH, await owner.getAddress());
 
+      // Add yield gain of 0.1 $BOLD - 10% to eachSP + mint same bold amount
       const yieldGain0 = ethers.parseEther('0.1');
-      const updatedCompBold0 = ONE_ETH + yieldGain0;
-      // Add yield gain of 0.1 $BOLD - 10%
-      await sp0.setCompoundedBoldDeposit(updatedCompBold0);
+      let assetsInSPs = calcAssetsInSPs(yieldGain0);
+
+      await sp0.setDepositorYieldGainWithPending(assetsInSPs[0]);
+      await sp1.setDepositorYieldGainWithPending(assetsInSPs[1]);
+      await sp2.setDepositorYieldGainWithPending(assetsInSPs[2]);
+
+      await bold.mintTo(sp0.target, assetsInSPs[0]);
+      await bold.mintTo(sp1.target, assetsInSPs[1]);
+      await bold.mintTo(sp2.target, assetsInSPs[2]);
+
+      // Set oracle price
       await priceOracle.setQuote(bold.target, ONE_ETH);
 
       const totalSupply0 = await sBold.totalSupply();
 
       const rate0 = await sBold.getSBoldRate();
-      // rate = 1.1 value / 1 $sBOLD total supply
-      const expectedRate0 = ((initialDeposit + updatedCompBold0) * ONE_ETH) / totalSupply0;
+
+      // rate = 2.1 ( dead share + deposit + yield) value * 1 $sBOLD /total supply
+      const expectedRate0 = ((ONE_ETH + ONE_ETH + yieldGain0) * ONE_ETH) / totalSupply0;
 
       expect(rate0).to.approximately(expectedRate0, 1);
 
       const contractSigner = sBold.connect(bob) as SBold;
       const boldSigner = bold.connect(bob) as MockERC20;
 
+      // 2st deposit - 2 $sBOLD in $BOLD value from bob
       const secondDepositorShares = ethers.parseEther('2');
       const secondDepositorAmount = ethers.parseEther('2.1');
 
       await boldSigner.mint(secondDepositorAmount);
       await boldSigner.approve(sBold.target, secondDepositorAmount);
 
-      // 1st deposit - 2 $sBOLD in $BOLD value
       await contractSigner.mint(secondDepositorShares, await bob.getAddress());
 
       const sBoldBalanceBob1 = await sBold.balanceOf(bobAddress);
@@ -1354,16 +1412,8 @@ describe('sBold', async function () {
       const boldBalanceSP1 = await bold.balanceOf(sp1.target);
       const boldBalanceSP2 = await bold.balanceOf(sp2.target);
 
-      // 1st mint + 2nd mint + yield gains
-      const updatedCompBold1 = ONE_ETH + secondDepositorAmount;
-
-      let assetsInSPs = calcAssetsInSPs(updatedCompBold1);
-
-      await sp0.setCompoundedBoldDeposit(assetsInSPs[0]);
-      await sp1.setCompoundedBoldDeposit(assetsInSPs[1]);
-      await sp2.setCompoundedBoldDeposit(assetsInSPs[2]);
-
-      const total = ONE_ETH + secondDepositorAmount;
+      // 1st deposit + 2nd deposit + yield.
+      const total = ONE_ETH + secondDepositorAmount + yieldGain0;
 
       expect(sBoldBalanceBob1).to.eq(secondDepositorShares);
 
@@ -1377,9 +1427,8 @@ describe('sBold', async function () {
 
       const rate1 = await sBold.getSBoldRate();
 
-      // rate is the $sBOLD / (deposited amount of $BOLD in the SP + yield gain) =>
-      // 4.1 / 4 => ~1.25
-      const expectedRate1 = ((initialDeposit + updatedCompBold1) * ONE_ETH) / totalSupply1;
+      // dead share + total deposit + yield * 1 $sBold / total supply
+      const expectedRate1 = ((ONE_ETH + total) * ONE_ETH) / totalSupply1;
 
       expect(rate1).to.approximately(expectedRate1, 1);
     });
@@ -1468,14 +1517,13 @@ describe('sBold', async function () {
       const pendingGains = ethers.parseEther('0.1');
       const compBold = ONE_ETH;
 
-      let compBoldInSpsAndPending = calcAssetsInSPs(compBold + pendingGains);
       let compBoldInSps = calcAssetsInSPs(compBold);
       let pendingGainsInSPs = calcAssetsInSPs(pendingGains);
 
       // stub amounts
-      await bold.mintTo(sp0.target, compBoldInSpsAndPending[0]);
-      await bold.mintTo(sp1.target, compBoldInSpsAndPending[1]);
-      await bold.mintTo(sp2.target, compBoldInSpsAndPending[2]);
+      await bold.mintTo(sp0.target, pendingGainsInSPs[0]);
+      await bold.mintTo(sp1.target, pendingGainsInSPs[1]);
+      await bold.mintTo(sp2.target, pendingGainsInSPs[2]);
 
       // set compounded yield
       await sp0.setCompoundedBoldDeposit(compBoldInSps[0]);
@@ -1508,9 +1556,12 @@ describe('sBold', async function () {
       const compoundedBoldBalance = await bold.balanceOf(ownerAddress);
 
       expect(compoundedBoldBalance).to.eq(expCompoundedBoldBalance);
-      expect(deltaSP0).to.eq((compBoldInSps[0] + pendingGainsInSPs[0]) / BigInt(2));
-      expect(deltaSP1).to.eq((compBoldInSps[1] + pendingGainsInSPs[1]) / BigInt(2));
-      expect(deltaSP2).to.eq((compBoldInSps[2] + pendingGainsInSPs[2]) / BigInt(2));
+
+      const expectedWithdrawnDistribution = calcAssetsInSPs(expCompoundedBoldBalance);
+
+      expect(deltaSP0).to.approximately(expectedWithdrawnDistribution[0], 1);
+      expect(deltaSP1).to.approximately(expectedWithdrawnDistribution[1], 1);
+      expect(deltaSP2).to.approximately(expectedWithdrawnDistribution[2], 1);
     });
 
     it('should withdraw based on portion and not account 0 amounts from SPs', async function () {
@@ -1561,19 +1612,25 @@ describe('sBold', async function () {
 
       // deposit
       await sBold.deposit(ONE_ETH, ownerAddress);
-      await sp0.setCompoundedBoldDeposit(ONE_ETH);
       // Bob deposits and sets `owner` as receiver
       await sBoldSignerBob.deposit(ONE_ETH, ownerAddress);
 
       // appreciate
       const yieldGain = ethers.parseEther('0.1');
-      const updatedCompBold = ONE_ETH + yieldGain;
+      const updatedCompBold = BigInt(2) * ONE_ETH + yieldGain;
 
       let assetsInSPs = calcAssetsInSPs(updatedCompBold);
+      let yieldInSps = calcAssetsInSPs(yieldGain);
 
       // Get yield gains only from SP0
-      await bold.mintTo(sp0.target, assetsInSPs[0]);
+      await bold.mintTo(sp0.target, yieldInSps[0]);
+      await bold.mintTo(sp1.target, yieldInSps[1]);
+      await bold.mintTo(sp2.target, yieldInSps[2]);
+
+      // set compounded yield
       await sp0.setCompoundedBoldDeposit(assetsInSPs[0]);
+      await sp1.setCompoundedBoldDeposit(assetsInSPs[1]);
+      await sp2.setCompoundedBoldDeposit(assetsInSPs[2]);
 
       // set quote
       await priceOracle.setQuote(bold.target, ONE_ETH);
@@ -1583,12 +1640,10 @@ describe('sBold', async function () {
 
       expect(maxWithdrawBob).to.eq(0);
 
-      const totalSupply = await sBold.totalSupply();
-
       // withdraw
       await sBold.withdraw(maxWithdraw, ownerAddress, ownerAddress);
       // 1 $BOLD from first deposit + decreased funds from consecutive deposits / total supply
-      const expCompoundedBoldBalance = (((initialDeposit + assetsInSPs[0]) * ONE_ETH) / totalSupply) * BigInt(2);
+      const expCompoundedBoldBalance = ((updatedCompBold + ONE_ETH) / BigInt(3)) * BigInt(2);
       const compoundedBoldBalance = await bold.balanceOf(ownerAddress);
 
       expect(compoundedBoldBalance).to.eq(expCompoundedBoldBalance);
@@ -1615,17 +1670,6 @@ describe('sBold', async function () {
       // deposit
       await contractSignerOwner.deposit(ONE_ETH, ownerAddress);
 
-      // stub amounts
-      let assetsInSPs = calcAssetsInSPs(ONE_ETH);
-
-      await sp0.setCompoundedBoldDeposit(assetsInSPs[0]);
-      await sp1.setCompoundedBoldDeposit(assetsInSPs[1]);
-      await sp2.setCompoundedBoldDeposit(assetsInSPs[2]);
-
-      await bold.mintTo(sp0.target, assetsInSPs[0]);
-      await bold.mintTo(sp1.target, assetsInSPs[1]);
-      await bold.mintTo(sp2.target, assetsInSPs[2]);
-
       await priceOracle.setQuote(bold.target, ONE_ETH);
 
       // deposit
@@ -1634,11 +1678,14 @@ describe('sBold', async function () {
       // appreciate
       const yieldGain = ethers.parseEther('0.2');
       const updatedCompBold = BigInt(2) * ONE_ETH + yieldGain;
+      const yieldInSPs = calcAssetsInSPs(yieldGain);
 
       // stub amounts
-      await bold.mintTo(sp0.target, updatedCompBold);
+      await bold.mintTo(sp0.target, yieldInSPs[0]);
+      await bold.mintTo(sp1.target, yieldInSPs[1]);
+      await bold.mintTo(sp2.target, yieldInSPs[2]);
 
-      assetsInSPs = calcAssetsInSPs(updatedCompBold);
+      let assetsInSPs = calcAssetsInSPs(updatedCompBold);
 
       await sp0.setCompoundedBoldDeposit(assetsInSPs[0]);
       await sp1.setCompoundedBoldDeposit(assetsInSPs[1]);
@@ -1651,16 +1698,6 @@ describe('sBold', async function () {
 
       // withdraw
       await contractSignerOwner.withdraw(maxWithdrawOwner, ownerAddress, ownerAddress);
-
-      // deduct withdrawn 1/3 share of the compounded $BOLD
-      const boldProRata = updatedCompBold - updatedCompBold / BigInt(3);
-
-      // stub amounts
-      assetsInSPs = calcAssetsInSPs(boldProRata);
-
-      await sp0.setCompoundedBoldDeposit(assetsInSPs[0]);
-      await sp1.setCompoundedBoldDeposit(assetsInSPs[1]);
-      await sp2.setCompoundedBoldDeposit(assetsInSPs[2]);
 
       await priceOracle.setQuote(bold.target, ONE_ETH);
 
@@ -1827,9 +1864,7 @@ describe('sBold', async function () {
       // deposit
       await contractSignerOwner.deposit(ONE_ETH, ownerAddress);
 
-      // update generated yield
       let assetsInSPs = calcAssetsInSPs(ONE_ETH);
-
       // stub amounts
       await sp0.setCompoundedBoldDeposit(assetsInSPs[0]);
       await sp1.setCompoundedBoldDeposit(assetsInSPs[1]);
@@ -1841,45 +1876,36 @@ describe('sBold', async function () {
       // 2nd deposit
       await contractSignerBob.deposit(ONE_ETH, bobAddress);
 
-      // appreciate
-      const yieldGain = ethers.parseEther('0.2');
-      const updatedCompBold = ONE_ETH * BigInt(2) + yieldGain;
-
-      const boldProRata = updatedCompBold - updatedCompBold / BigInt(3);
-
+      assetsInSPs = calcAssetsInSPs(ONE_ETH * BigInt(2));
       // stub amounts
-      assetsInSPs = calcAssetsInSPs(updatedCompBold);
-
       await sp0.setCompoundedBoldDeposit(assetsInSPs[0]);
       await sp1.setCompoundedBoldDeposit(assetsInSPs[1]);
       await sp2.setCompoundedBoldDeposit(assetsInSPs[2]);
 
-      await bold.mintTo(sp0.target, assetsInSPs[0]);
-      await bold.mintTo(sp1.target, assetsInSPs[1]);
-      await bold.mintTo(sp2.target, assetsInSPs[2]);
+      let pendingGainsInSPs = calcAssetsInSPs(ONE_ETH);
+
+      // set pending yield
+      await sp0.setDepositorYieldGainWithPending(pendingGainsInSPs[0]);
+      await sp1.setDepositorYieldGainWithPending(pendingGainsInSPs[1]);
+      await sp2.setDepositorYieldGainWithPending(pendingGainsInSPs[2]);
+
+      await bold.mintTo(sp0.target, pendingGainsInSPs[0]);
+      await bold.mintTo(sp1.target, pendingGainsInSPs[1]);
+      await bold.mintTo(sp2.target, pendingGainsInSPs[2]);
 
       const maxRedeemOwner = await sBold.maxRedeem(ownerAddress);
 
       // redeem
       await contractSignerOwner.redeem(maxRedeemOwner, ownerAddress, ownerAddress);
 
-      // stub amounts
-      assetsInSPs = calcAssetsInSPs(boldProRata);
-
-      await sp0.setCompoundedBoldDeposit(assetsInSPs[0]);
-      await sp1.setCompoundedBoldDeposit(assetsInSPs[1]);
-      await sp2.setCompoundedBoldDeposit(assetsInSPs[2]);
-
       const maxRedeemBob = await sBold.maxRedeem(bobAddress);
 
       // redeem
       await contractSignerBob.redeem(maxRedeemBob, bobAddress, bobAddress);
 
-      const expBalances = ONE_ETH + yieldGain / BigInt(3);
-
       // assert
-      expect(await bold.balanceOf(ownerAddress)).to.approximately(expBalances, 1);
-      expect(await bold.balanceOf(bobAddress)).to.approximately(expBalances, 1);
+      expect(await bold.balanceOf(ownerAddress)).to.approximately(ONE_ETH + ONE_ETH / BigInt(3), 1);
+      expect(await bold.balanceOf(bobAddress)).to.approximately(ONE_ETH + ONE_ETH / BigInt(3), 1);
     });
 
     it('should revert if trying to redeem more than max', async function () {

@@ -94,7 +94,7 @@ abstract contract BaseSBold is ISBold, ICommon, ERC4626, ReentrancyGuardTransien
     /// @param _feeBps The fee in BPS.
     /// @param _swapFeeBps The swap fee in BPS.
     function setFees(uint256 _feeBps, uint256 _swapFeeBps) external onlyOwner {
-        if (_feeBps > Constants.BPS_MAX_FEE || _swapFeeBps > Constants.BPS_MAX_FEE) revert InvalidConfiguration();
+        if (_feeBps > Constants.BPS_MAX_DEPOSIT_FEE || _swapFeeBps > Constants.BPS_MAX_FEE) revert InvalidConfiguration();
 
         feeBps = _feeBps;
         swapFeeBps = _swapFeeBps;
@@ -105,7 +105,7 @@ abstract contract BaseSBold is ISBold, ICommon, ERC4626, ReentrancyGuardTransien
     /// @notice Sets the reward in BPS.
     /// @param _rewardBps The reward in BPS.
     function setReward(uint256 _rewardBps) external onlyOwner {
-        if (_rewardBps < Constants.BPS_MIN_REWARD || _rewardBps > Constants.BPS_MAX_REWARD)
+        if (_rewardBps > Constants.BPS_MAX_REWARD)
             revert InvalidConfiguration();
 
         rewardBps = _rewardBps;
@@ -173,7 +173,7 @@ abstract contract BaseSBold is ISBold, ICommon, ERC4626, ReentrancyGuardTransien
     /// The decimal precision for each Coll is dynamically extracted.
     /// @param _sps Address and weight of Stability Pools.
     function _setSPs(SPConfig[] memory _sps) internal {
-        if (_sps.length == 0 || _sps.length > Constants.MAX_SP) revert InvalidSPLength();
+        if (_sps.length == 0) revert InvalidSPLength();
 
         uint256 totalWeight;
         for (uint256 i = 0; i < _sps.length; i++) {

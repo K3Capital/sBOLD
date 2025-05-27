@@ -162,76 +162,6 @@ describe('sBold', async function () {
       ).to.be.rejectedWith('InvalidSPLength');
     });
 
-    it('should revert to deploy sBold if SPs are over the max allowed', async function () {
-      const SBoldFactory = await ethers.getContractFactory('sBold');
-
-      const sp3 = (await ethers.deployContract('MockStabilityPool')).connect(owner) as MockStabilityPool;
-      await sp3.setColl(stETH.target);
-
-      await expect(
-        SBoldFactory.deploy(
-          bold.target,
-          name,
-          symbol,
-          [
-            {
-              addr: sp0.target,
-              weight: 2500,
-            },
-            {
-              addr: sp1.target,
-              weight: 2500,
-            },
-            {
-              addr: sp2.target,
-              weight: 2500,
-            },
-            {
-              addr: sp3.target,
-              weight: 2500,
-            },
-          ],
-          priceOracle.target,
-          vaultAddress,
-        ),
-      ).to.be.rejectedWith('InvalidSPLength');
-    });
-
-    it('should revert to deploy sBold if SPs are not added', async function () {
-      const SBoldFactory = await ethers.getContractFactory('sBold');
-
-      const sp3 = (await ethers.deployContract('MockStabilityPool')).connect(owner) as MockStabilityPool;
-      await sp3.setColl(stETH.target);
-
-      await expect(
-        SBoldFactory.deploy(
-          bold.target,
-          name,
-          symbol,
-          [
-            {
-              addr: sp0.target,
-              weight: 2500,
-            },
-            {
-              addr: sp1.target,
-              weight: 2500,
-            },
-            {
-              addr: sp2.target,
-              weight: 2500,
-            },
-            {
-              addr: sp3.target,
-              weight: 2500,
-            },
-          ],
-          priceOracle.target,
-          vaultAddress,
-        ),
-      ).to.be.rejectedWith('InvalidSPLength');
-    });
-
     it('should revert to deploy sBold if SPs have more total weight than maximum bps', async function () {
       const SBoldFactory = await ethers.getContractFactory('sBold');
       await expect(
@@ -457,12 +387,6 @@ describe('sBold', async function () {
       await expect(contractSigner.setReward(rewardBps)).to.be.rejectedWith('OwnableUnauthorizedAccount');
     });
 
-    it('should revert to set reward with value below the minimum', async function () {
-      const rewardBps = 0;
-
-      await expect(sBold.setReward(rewardBps)).to.be.rejectedWith('InvalidConfiguration');
-    });
-
     it('should revert to set reward with value above the maximum', async function () {
       const rewardBps = 1001;
 
@@ -546,7 +470,7 @@ describe('sBold', async function () {
     });
 
     it('should revert to set max collateral value with value over the limit', async function () {
-      const maxCollInBold = ethers.parseEther('7501');
+      const maxCollInBold = ethers.parseEther('1000001');
 
       await expect(sBold.setMaxCollInBold(maxCollInBold)).to.be.rejectedWith('InvalidConfiguration');
     });
@@ -2006,10 +1930,10 @@ describe('sBold', async function () {
     [
       // 0% fees in BPS, $BOLD price is 1e18
       [BigInt(0), BigInt(0), ONE_ETH],
-      // 0% swap fee in BPS + 5% reward in BPS, $BOLD price is 2e18
-      [BigInt(0), BigInt(500), ONE_ETH * BigInt(2)],
-      // 5% swap fee in BPS + 5% reward in BPS, $BOLD price is 2e18
-      [BigInt(500), BigInt(500), ONE_ETH * BigInt(2)],
+      // 0% swap fee in BPS + 2.5% reward in BPS, $BOLD price is 2e18
+      [BigInt(0), BigInt(250), ONE_ETH * BigInt(2)],
+      // 2.5% swap fee in BPS + 2.5% reward in BPS, $BOLD price is 2e18
+      [BigInt(250), BigInt(250), ONE_ETH * BigInt(2)],
       // 0% fees in BPS, $BOLD price is 5e17
       [BigInt(0), BigInt(0), ONE_ETH / BigInt(2)],
     ].forEach(([swapFeeBps, rewardBps, boldPrice]) => {
@@ -2164,10 +2088,10 @@ describe('sBold', async function () {
     [
       // 0% swap fee in BPS
       [0, 0],
-      // 0% swap fee in BPS + 5% reward in BPS
-      [0, BigInt(500)],
-      // 5% swap fee in BPS + 5% reward in BPS
-      [BigInt(500), BigInt(500)],
+      // 0% swap fee in BPS + 2.5% reward in BPS
+      [0, BigInt(250)],
+      // 2.5% swap fee in BPS + 2.5% reward in BPS
+      [BigInt(250), BigInt(250)],
     ].forEach(([swapFeeBps, rewardBps]) => {
       it('should swap collateral to $sBOLD for 2/3 number of SPs', async function () {
         const ownerAddress = await owner.getAddress();
@@ -2302,10 +2226,10 @@ describe('sBold', async function () {
     [
       // 0% swap fee in BPS
       [0, 0],
-      // 0% swap fee in BPS + 5% reward in BPS
-      [0, BigInt(500)],
-      // 5% swap fee in BPS + 5% reward in BPS
-      [BigInt(500), BigInt(500)],
+      // 0% swap fee in BPS + 2.5% reward in BPS
+      [0, BigInt(250)],
+      // 2.5% swap fee in BPS + 2.5% reward in BPS
+      [BigInt(250), BigInt(250)],
     ].forEach(([swapFeeBps, rewardBps]) => {
       it('should partially swap collateral to $sBOLD for 1/3 number of SPs which should result in idle collateral in protocol', async function () {
         const ownerAddress = await owner.getAddress();
